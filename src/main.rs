@@ -3,7 +3,7 @@ mod db;
 use chrono::Local;
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -86,6 +86,22 @@ impl App {
         let len = self.todos.len() as isize;
         let cur = self.state.selected().unwrap_or(0) as isize;
         self.state.select(Some((cur + delta).rem_euclid(len) as usize));
+    }
+
+    fn move_selected(&mut self, delta: isize) -> rusqlite::Result<()> {
+        let Some(i) = self.state.selected() else {
+            return Ok(());
+        };
+        let j = i as isize + delta;
+        if j < 0 || j as usize >= self.todos.len() {
+            return Ok(());
+        }
+        let (a, b) = (&self.todos[i], &self.todos[j as usize]);
+        self.store.set_position(a.id, b.position)?;
+        self.store.set_position(b.id, a.position)?;
+        self.reload()?;
+        self.status = "순서 이동됨".to_string();
+        Ok(())
     }
 
     fn toggle_done(&mut self) -> rusqlite::Result<()> {
@@ -203,6 +219,14 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<(), Box<dyn std:
                 }
                 KeyCode::Char('d') => app.delete_selected()?,
                 KeyCode::Char(' ') => app.toggle_done()?,
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.move_selected(-1)?
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.move_selected(1)?
+                }
+                KeyCode::Char('K') => app.move_selected(-1)?,
+                KeyCode::Char('J') => app.move_selected(1)?,
                 KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
                 KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
                 _ => {}
@@ -306,7 +330,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     let bottom = match app.mode {
         Mode::Insert => input_box("새 할 일 (Enter 추가 · Esc 명령모드)", &app.input, true),
         Mode::Normal => Paragraph::new(format!(
-            "i 입력  e 편집  t 마감  space 완료  d 삭제  ↑↓ 이동  q 종료    {}",
+            "i 입력  e 편집  t 마감  space 완료  d 삭제  ↑↓ 이동  ⇧↑↓/JK 순서  q 종료    {}",
             app.status
         ))
         .style(Style::default().fg(Color::Gray))
@@ -418,6 +442,27 @@ mod tests {
         app.commit_form(&Form { id, text: "수정됨".to_string() }).unwrap().unwrap();
         let todos = app.store.list().unwrap();
         assert_eq!(todos[1].text, "수정됨");
+    }
+
+    #[test]
+    fn move_selected_reorders_and_keeps_selection() {
+        let mut app = app_with_todos(3); // todo 0, todo 1, todo 2
+        app.state.select(Some(0));
+        app.move_selected(1).unwrap();
+        let texts: Vec<_> = app.todos.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["todo 1", "todo 0", "todo 2"]);
+        // 이동한 항목을 계속 선택 중이어야 한다.
+        assert_eq!(app.selected().unwrap().text, "todo 0");
+        assert_eq!(app.state.selected(), Some(1));
+    }
+
+    #[test]
+    fn move_selected_clamps_at_edges() {
+        let mut app = app_with_todos(2);
+        app.state.select(Some(0));
+        app.move_selected(-1).unwrap(); // 맨 위에서 위로 → 변화 없음
+        let texts: Vec<_> = app.todos.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["todo 0", "todo 1"]);
     }
 
     #[test]

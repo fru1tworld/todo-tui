@@ -43,8 +43,11 @@ cargo build --release && ./target/release/todo-tui   # 릴리스 빌드 후 실�
 | `t` | 선택 항목 마감일 설정/해제 (`YYYY-MM-DD`, 비우면 해제) |
 | `Space` | 완료/미완료 토글 |
 | `d` | 삭제 |
-| `↑`/`k`, `↓`/`j` | 이동 |
+| `↑`/`k`, `↓`/`j` | 선택 이동 |
+| `Shift`+`↑`/`↓` (또는 `K`/`J`) | **우선순위 순서 이동** (위/아래로 재정렬) |
 | `q` | 종료 |
+
+> 항목은 직접 정한 우선순위 순서로 정렬·저장됩니다. 새 할 일은 맨 아래에 추가됩니다.
 
 각 항목에는 추가한 **생성 시각**이 `YYYY-MM-DD HH:MM` 형식(로컬 타임존)으로 좌측 정렬되어 `[ ] 생성시각: 내용` 형태로 표시되고, 마감이 있으면 `⏳`로 함께 보입니다(지난 마감은 빨간색).
 
@@ -63,7 +66,8 @@ CREATE TABLE todos (
     text       TEXT    NOT NULL,
     created_at INTEGER NOT NULL,  -- UTC epoch seconds
     due_at     INTEGER,           -- 마감 (epoch seconds, 없으면 NULL)
-    done       INTEGER NOT NULL DEFAULT 0
+    done       INTEGER NOT NULL DEFAULT 0,
+    position   INTEGER NOT NULL DEFAULT 0  -- 우선순위 정렬 순서
 );
 ```
 

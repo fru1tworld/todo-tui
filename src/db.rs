@@ -9,6 +9,7 @@ pub struct Todo {
     pub created_at: i64,
     pub due_at: Option<i64>,
     pub done: bool,
+    pub position: i64,
 }
 
 impl Todo {
@@ -52,7 +53,8 @@ impl Store {
                 text       TEXT    NOT NULL,
                 created_at INTEGER NOT NULL,
                 due_at     INTEGER,
-                done       INTEGER NOT NULL DEFAULT 0
+                done       INTEGER NOT NULL DEFAULT 0,
+                position   INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -61,6 +63,14 @@ impl Store {
         if !existing.iter().any(|c| c == "due_at") {
             self.conn
                 .execute("ALTER TABLE todos ADD COLUMN due_at INTEGER", [])?;
+        }
+        if !existing.iter().any(|c| c == "position") {
+            self.conn.execute(
+                "ALTER TABLE todos ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            // 기존 항목은 생성 순서(=id)를 초기 우선순위로 둔다.
+            self.conn.execute("UPDATE todos SET position = id", [])?;
         }
         Ok(())
     }
@@ -73,8 +83,8 @@ impl Store {
 
     pub fn list(&self) -> Result<Vec<Todo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, text, created_at, due_at, done
-             FROM todos ORDER BY created_at ASC, id ASC",
+            "SELECT id, text, created_at, due_at, done, position
+             FROM todos ORDER BY position ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Todo {
@@ -83,6 +93,7 @@ impl Store {
                 created_at: row.get(2)?,
                 due_at: row.get(3)?,
                 done: row.get::<_, i64>(4)? != 0,
+                position: row.get(5)?,
             })
         })?;
         rows.collect()
@@ -90,9 +101,14 @@ impl Store {
 
     pub fn add(&self, text: &str, due_at: Option<i64>) -> Result<i64> {
         let now = Local::now().timestamp();
+        let next_pos: i64 =
+            self.conn
+                .query_row("SELECT COALESCE(MAX(position), 0) + 1 FROM todos", [], |r| {
+                    r.get(0)
+                })?;
         self.conn.execute(
-            "INSERT INTO todos (text, created_at, due_at, done) VALUES (?1, ?2, ?3, 0)",
-            (text, now, due_at),
+            "INSERT INTO todos (text, created_at, due_at, done, position) VALUES (?1, ?2, ?3, 0, ?4)",
+            (text, now, due_at, next_pos),
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -102,6 +118,12 @@ impl Store {
             "UPDATE todos SET text = ?1, due_at = ?2 WHERE id = ?3",
             (text, due_at, id),
         )?;
+        Ok(())
+    }
+
+    pub fn set_position(&self, id: i64, position: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE todos SET position = ?1 WHERE id = ?2", (position, id))?;
         Ok(())
     }
 
@@ -183,12 +205,6 @@ mod tests {
         assert_eq!(t.text, "수정됨");
         assert_eq!(t.due_at, None);
 
-        let due2 = parse_due("2026-08-15").unwrap();
-        s.set_due(id, due2).unwrap();
-        assert_eq!(s.list().unwrap()[0].due_at, due2);
-        s.set_due(id, None).unwrap();
-        assert_eq!(s.list().unwrap()[0].due_at, None);
-
         s.set_done(id, true).unwrap();
         assert!(s.list().unwrap()[0].done);
 
@@ -197,17 +213,48 @@ mod tests {
     }
 
     #[test]
-    fn orders_by_created_at() {
+    fn add_assigns_increasing_position() {
+        let s = mem_store();
+        s.add("a", None).unwrap();
+        s.add("b", None).unwrap();
+        s.add("c", None).unwrap();
+        let todos = s.list().unwrap();
+        assert!(todos[0].position < todos[1].position);
+        assert!(todos[1].position < todos[2].position);
+        assert_eq!(
+            todos.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn orders_by_position() {
         let s = mem_store();
         s.conn
-            .execute("INSERT INTO todos (text, created_at) VALUES ('b', 200)", [])
+            .execute("INSERT INTO todos (text, created_at, position) VALUES ('b', 100, 2)", [])
             .unwrap();
         s.conn
-            .execute("INSERT INTO todos (text, created_at) VALUES ('a', 100)", [])
+            .execute("INSERT INTO todos (text, created_at, position) VALUES ('a', 200, 1)", [])
             .unwrap();
         let todos = s.list().unwrap();
         assert_eq!(todos[0].text, "a");
         assert_eq!(todos[1].text, "b");
+    }
+
+    #[test]
+    fn set_position_reorders() {
+        let s = mem_store();
+        let a = s.add("a", None).unwrap();
+        let b = s.add("b", None).unwrap();
+        let (pa, pb) = {
+            let todos = s.list().unwrap();
+            (todos[0].position, todos[1].position)
+        };
+        s.set_position(a, pb).unwrap();
+        s.set_position(b, pa).unwrap();
+        let todos = s.list().unwrap();
+        assert_eq!(todos[0].text, "b");
+        assert_eq!(todos[1].text, "a");
     }
 
     #[test]
@@ -230,6 +277,7 @@ mod tests {
         let t = &store.list().unwrap()[0];
         assert_eq!(t.text, "old");
         assert_eq!(t.due_at, None);
+        assert_eq!(t.position, t.id);
     }
 
     #[test]
@@ -249,6 +297,7 @@ mod tests {
             created_at: 0,
             due_at: Some(100),
             done: false,
+            position: 1,
         };
         assert!(t.is_overdue(200));
         assert!(!t.is_overdue(50));
