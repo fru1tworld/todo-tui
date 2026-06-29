@@ -3,7 +3,14 @@ mod db;
 use chrono::Local;
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    crossterm::{
+        event::{
+            self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        },
+        execute,
+        terminal::supports_keyboard_enhancement,
+    },
     layout::{Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -166,7 +173,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(store)?;
 
     let mut terminal = ratatui::init();
+
+    // 터미널이 지원하면 키보드 향상 플래그를 켜서 Shift+화살표 같은
+    // 수정자 조합을 받을 수 있게 한다. (미지원 터미널에서는 JK 로 동작)
+    let enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced {
+        let _ = execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
+
     let result = run(&mut terminal, &mut app);
+
+    if enhanced {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
     ratatui::restore();
     result
 }
