@@ -1,0 +1,10 @@
+[package]
+name = "todo-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.30"
+rusqlite = { version = "0.40", features = ["bundled"] }
+chrono = "0.4"
+dirs = "6"
