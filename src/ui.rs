@@ -144,7 +144,7 @@ fn bottom_panel(app: &App, inner_width: u16) -> Paragraph<'static> {
                 )));
             }
             Paragraph::new(lines)
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::default().add_modifier(Modifier::DIM))
                 .block(Block::default().borders(Borders::ALL).title(" 안내 "))
         }
     }
@@ -198,7 +198,7 @@ fn parent_line(
 
     if has_children {
         let caret = if t.collapsed { "▸ " } else { "▾ " };
-        prefix.push(Span::styled(caret, Style::default().fg(Color::Yellow)));
+        prefix.push(Span::styled(caret, Style::default().add_modifier(Modifier::DIM)));
     } else {
         prefix.push(Span::raw("  "));
     }
@@ -210,11 +210,9 @@ fn parent_line(
     let mut suffix = Vec::new();
     if has_children {
         let style = if done_children == total_children {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(Color::Green)
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default().add_modifier(Modifier::DIM)
         };
         suffix.push(Span::styled(
             format!("  ({done_children}/{total_children})"),
@@ -229,7 +227,7 @@ fn parent_line(
 fn child_line(t: &Todo, now: i64, is_last: bool, width: usize) -> ListItem<'static> {
     let branch = if is_last { "    └ " } else { "    ├ " };
     let prefix = vec![
-        Span::styled(branch, Style::default().fg(Color::DarkGray)),
+        Span::styled(branch, Style::default().add_modifier(Modifier::DIM)),
         checkbox(t.done),
         timestamp_badge(t.created_at_string()),
         Span::raw(" "),
@@ -332,22 +330,20 @@ fn wrap_width(text: &str, width: usize) -> Vec<String> {
 }
 
 fn checkbox(done: bool) -> Span<'static> {
-    let mark = if done { "[x] " } else { "[ ] " };
-    Span::styled(mark, Style::default().fg(Color::Green))
+    if done {
+        Span::styled("[x] ", Style::default().fg(Color::Green))
+    } else {
+        Span::styled("[ ] ", Style::default().add_modifier(Modifier::DIM))
+    }
 }
 
 fn timestamp_badge(ts: String) -> Span<'static> {
-    Span::styled(
-        format!(" {ts} "),
-        Style::default().fg(Color::Black).bg(Color::Gray),
-    )
+    Span::styled(format!(" {ts} "), Style::default().add_modifier(Modifier::DIM))
 }
 
 fn content_style(done: bool) -> Style {
     if done {
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::CROSSED_OUT)
+        Style::default().add_modifier(Modifier::DIM | Modifier::CROSSED_OUT)
     } else {
         Style::default()
     }
@@ -358,7 +354,7 @@ fn push_due(spans: &mut Vec<Span<'static>>, t: &Todo, now: i64) {
         let style = if t.is_overdue(now) {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Magenta)
+            Style::default().add_modifier(Modifier::DIM)
         };
         spans.push(Span::styled(format!("   ⏳ {due}"), style));
     }
