@@ -6,6 +6,7 @@ mod ui;
 use ratatui::{
     DefaultTerminal,
     crossterm::{
+        cursor::SetCursorStyle,
         event::{
             self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
             PushKeyboardEnhancementFlags,
@@ -33,9 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
+    let _ = execute!(std::io::stdout(), SetCursorStyle::BlinkingBar);
 
     let result = run(&mut terminal, &mut app);
 
+    let _ = execute!(std::io::stdout(), SetCursorStyle::DefaultUserShape);
     if enhanced {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }

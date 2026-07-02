@@ -1,13 +1,13 @@
 use chrono::Local;
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::{Constraint, Flex, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::{App, Mode, Popup};
+use crate::app::{App, Mode};
 use crate::db::Todo;
 
 const HELP_GROUPS: &[&[&str]] = &[
@@ -48,8 +48,29 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(todo_list(app), mid, &mut app.state);
     f.render_widget(bottom, bot);
 
-    if let Some(popup) = &app.popup {
-        render_popup(f, popup);
+    // 편집 중일 때만 실제 터미널 커서를 입력 위치에 둔다(네이티브 커서·한글 조합).
+    let editing = if let Some(popup) = &app.popup {
+        let area = centered_rect(60, 3, f.area());
+        f.render_widget(Clear, area);
+        f.render_widget(input_box(popup.kind.label(), &popup.input), area);
+        Some((area, popup.input.as_str()))
+    } else if app.mode == Mode::Insert {
+        Some((bot, app.input.as_str()))
+    } else {
+        None
+    };
+    if let Some((area, text)) = editing {
+        f.set_cursor_position(input_cursor(area, text));
+    }
+}
+
+fn input_cursor(area: Rect, text: &str) -> Position {
+    use unicode_width::UnicodeWidthStr;
+
+    let x = area.x + 1 + text.width() as u16;
+    Position {
+        x: x.min(area.right().saturating_sub(2)),
+        y: area.y + 1,
     }
 }
 
@@ -248,14 +269,8 @@ fn push_due(spans: &mut Vec<Span<'static>>, t: &Todo, now: i64) {
     }
 }
 
-fn render_popup(f: &mut Frame, popup: &Popup) {
-    let area = centered_rect(60, 3, f.area());
-    f.render_widget(Clear, area);
-    f.render_widget(input_box(popup.kind.label(), &popup.input), area);
-}
-
 fn input_box(label: &str, value: &str) -> Paragraph<'static> {
-    Paragraph::new(format!("{value}▏")).block(
+    Paragraph::new(value.to_string()).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
