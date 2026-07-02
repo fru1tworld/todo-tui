@@ -1616,6 +1616,7 @@ dependencies = [
  "dirs",
  "ratatui",
  "rusqlite",
+ "unicode-width",
 ]
 
 [[package]]

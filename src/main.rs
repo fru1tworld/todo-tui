@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use db::{Store, Todo, parse_due};
@@ -523,9 +523,10 @@ fn handle_popup(app: &mut App, code: KeyCode) -> rusqlite::Result<()> {
 fn ui(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
-    // 안내바는 터미널 폭에 맞춰 줄바꿈되므로, 필요한 줄 수만큼 높이를 잡는다.
-    let bottom = bottom_panel(app);
-    let bottom_height = bottom.line_count(area.width.saturating_sub(2)).max(3) as u16;
+    // 안내바는 커맨드 단위로 줄바꿈되므로, 필요한 줄 수만큼 높이를 잡는다.
+    let inner = area.width.saturating_sub(2);
+    let bottom = bottom_panel(app, inner);
+    let bottom_height = bottom.line_count(inner).max(3) as u16;
 
     let [top, mid, bot] = Layout::vertical([
         Constraint::Length(3),
@@ -599,17 +600,81 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn bottom_panel(app: &App) -> Paragraph<'static> {
+/// 안내바 커맨드. 그룹(동작 / 이동·구조)마다 항상 새 줄에서 시작한다.
+const HELP_GROUPS: &[&[&str]] = &[
+    &[
+        "i 입력",
+        "s 하위추가",
+        "e 편집",
+        "t 마감",
+        "space 완료",
+        "d 삭제",
+    ],
+    &[
+        "↑↓ 이동",
+        "← 접기",
+        "→ 펼치기",
+        "Shift+← 넣기",
+        "Shift+→ 빼기",
+        "Shift+↑↓ 순서",
+        "q 종료",
+    ],
+];
+
+fn bottom_panel(app: &App, inner_width: u16) -> Paragraph<'static> {
     match app.mode {
         Mode::Insert => input_box("새 할 일 (Enter 추가 · Esc 명령모드)", &app.input, true),
-        Mode::Normal => Paragraph::new(format!(
-            "i 입력  s 하위추가  e 편집  t 마감  space 완료  d 삭제  ←→ 접기  Shift+← 넣기  Shift+→ 빼기  Shift+↑↓ 순서  q 종료    {}",
-            app.status
-        ))
-        .style(Style::default().fg(Color::Gray))
-        .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::ALL).title(" 안내 ")),
+        Mode::Normal => {
+            let mut lines = wrap_commands(HELP_GROUPS, inner_width);
+            if !app.status.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    app.status.clone(),
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+            Paragraph::new(lines)
+                .style(Style::default().fg(Color::Gray))
+                .block(Block::default().borders(Borders::ALL).title(" 안내 "))
+        }
     }
+}
+
+/// 커맨드 토큰을 폭에 맞춰 줄로 묶는다. 토큰 내부는 절대 쪼개지 않고, 그룹 경계에서는
+/// 남는 폭과 상관없이 항상 새 줄로 넘어간다.
+fn wrap_commands(groups: &[&[&str]], width: u16) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthStr;
+
+    const SEP: &str = "   ";
+    let width = width as usize;
+    let sep_w = SEP.width();
+
+    let mut lines = Vec::new();
+    for group in groups {
+        let mut cur = String::new();
+        let mut cur_w = 0usize;
+        for cmd in *group {
+            let w = cmd.width();
+            if cur.is_empty() {
+                cur.push_str(cmd);
+                cur_w = w;
+            } else if cur_w + sep_w + w <= width {
+                cur.push_str(SEP);
+                cur.push_str(cmd);
+                cur_w += sep_w + w;
+            } else {
+                lines.push(Line::from(std::mem::take(&mut cur)));
+                cur.push_str(cmd);
+                cur_w = w;
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(Line::from(cur));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 fn content_style(done: bool) -> Style {
@@ -950,5 +1015,25 @@ mod tests {
         assert!(app.todos.iter().find(|t| t.id == p).unwrap().done);
         app.commit_subtask(p, "새 하위").unwrap().unwrap();
         assert!(!app.todos.iter().find(|t| t.id == p).unwrap().done);
+    }
+
+    fn line_text(l: &Line) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn help_wraps_by_command_and_group() {
+        // 넉넉한 폭이면 그룹마다 한 줄 → 총 2줄.
+        let wide = wrap_commands(HELP_GROUPS, 200);
+        assert_eq!(wide.len(), 2);
+
+        // 좁은 폭이라도 커맨드 토큰은 절대 쪼개지지 않는다.
+        let narrow = wrap_commands(HELP_GROUPS, 12);
+        for cmd in HELP_GROUPS.iter().flat_map(|g| g.iter()) {
+            assert!(
+                narrow.iter().any(|l| line_text(l).contains(cmd)),
+                "커맨드가 쪼개짐: {cmd}"
+            );
+        }
     }
 }
