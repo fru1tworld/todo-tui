@@ -103,14 +103,9 @@ fn todo_list(app: &App) -> List<'static> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" 목록  [ ] 생성시각: 내용 "),
+                .title(" 목록  [ ] 시각 내용 "),
         )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD))
         .highlight_symbol("▶ ")
 }
 
@@ -185,11 +180,8 @@ fn parent_line(
     }
 
     spans.push(checkbox(t.done));
-    spans.push(Span::styled(
-        t.created_at_string(),
-        Style::default().fg(Color::DarkGray),
-    ));
-    spans.push(Span::styled(": ", Style::default().fg(Color::DarkGray)));
+    spans.push(timestamp_badge(t.created_at_string()));
+    spans.push(Span::raw(" "));
     spans.push(Span::styled(t.text.clone(), content_style(t.done)));
 
     if has_children {
@@ -215,8 +207,8 @@ fn child_line(t: &Todo, now: i64, is_last: bool) -> ListItem<'static> {
     let mut spans = vec![
         Span::styled(branch, Style::default().fg(Color::DarkGray)),
         checkbox(t.done),
-        Span::styled(t.created_at_string(), Style::default().fg(Color::DarkGray)),
-        Span::styled(": ", Style::default().fg(Color::DarkGray)),
+        timestamp_badge(t.created_at_string()),
+        Span::raw(" "),
         Span::styled(t.text.clone(), content_style(t.done)),
     ];
     push_due(&mut spans, t, now);
@@ -226,6 +218,13 @@ fn child_line(t: &Todo, now: i64, is_last: bool) -> ListItem<'static> {
 fn checkbox(done: bool) -> Span<'static> {
     let mark = if done { "[x] " } else { "[ ] " };
     Span::styled(mark, Style::default().fg(Color::Green))
+}
+
+fn timestamp_badge(ts: String) -> Span<'static> {
+    Span::styled(
+        format!(" {ts} "),
+        Style::default().fg(Color::Black).bg(Color::Gray),
+    )
 }
 
 fn content_style(done: bool) -> Style {
