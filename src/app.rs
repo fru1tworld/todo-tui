@@ -163,21 +163,25 @@ impl App {
         };
         let (id, parent_id) = (cur.id, cur.parent_id);
 
-        let siblings: Vec<(i64, i64)> = self
+        let siblings: Vec<(i64, i64, bool)> = self
             .todos
             .iter()
             .filter(|t| t.parent_id == parent_id)
-            .map(|t| (t.id, t.position))
+            .map(|t| (t.id, t.position, t.done))
             .collect();
-        let Some(idx) = siblings.iter().position(|(sid, _)| *sid == id) else {
+        let Some(idx) = siblings.iter().position(|(sid, _, _)| *sid == id) else {
             return Ok(());
         };
         let j = idx as isize + delta;
         if j < 0 || j as usize >= siblings.len() {
             return Ok(());
         }
-        let (a_id, a_pos) = siblings[idx];
-        let (b_id, b_pos) = siblings[j as usize];
+        let (a_id, a_pos, a_done) = siblings[idx];
+        let (b_id, b_pos, b_done) = siblings[j as usize];
+        if a_done != b_done {
+            self.status = "완료 항목은 미완료 항목과 자리를 바꿀 수 없어요".to_string();
+            return Ok(());
+        }
         self.store.set_position(a_id, b_pos)?;
         self.store.set_position(b_id, a_pos)?;
         self.reload()?;
@@ -498,6 +502,33 @@ mod tests {
     }
 
     #[test]
+    fn toggle_done_sinks_and_restores() {
+        let mut app = app_with_todos(3);
+        app.state.select(Some(0));
+        app.toggle_done().unwrap();
+        let texts: Vec<_> = app.todos.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["todo 1", "todo 2", "todo 0"]);
+        assert_eq!(app.selected().unwrap().text, "todo 0");
+
+        app.toggle_done().unwrap();
+        let texts: Vec<_> = app.todos.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["todo 0", "todo 1", "todo 2"]);
+        assert_eq!(app.selected().unwrap().text, "todo 0");
+    }
+
+    #[test]
+    fn reorder_refused_across_done_boundary() {
+        let mut app = app_with_todos(3);
+        app.state.select(Some(2));
+        app.toggle_done().unwrap();
+        assert_eq!(app.selected().unwrap().text, "todo 2");
+
+        app.move_selected(-1).unwrap();
+        let texts: Vec<_> = app.todos.iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["todo 0", "todo 1", "todo 2"]);
+    }
+
+    #[test]
     fn toggle_and_delete() {
         let mut app = app_with_todos(1);
         app.toggle_done().unwrap();
@@ -636,16 +667,25 @@ mod tests {
     }
 
     #[test]
-    fn indent_reopens_completed_new_parent() {
+    fn indent_refused_when_done_item_sank_below() {
         let mut app = app_with_todos(2);
         let t0 = app.todos[0].id;
         app.select_id_or_first(Some(t0));
         app.toggle_done().unwrap();
         assert!(app.todos.iter().find(|t| t.id == t0).unwrap().done);
+        assert_eq!(app.todos[1].id, t0);
+
         let t1 = app.todos.iter().find(|t| t.text == "todo 1").unwrap().id;
         app.select_id_or_first(Some(t1));
         app.indent_selected().unwrap();
-        assert!(!app.todos.iter().find(|t| t.id == t0).unwrap().done);
+        assert!(
+            app.todos
+                .iter()
+                .find(|t| t.id == t1)
+                .unwrap()
+                .parent_id
+                .is_none()
+        );
     }
 
     #[test]

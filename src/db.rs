@@ -97,7 +97,7 @@ impl Store {
     pub fn list(&self) -> Result<Vec<Todo>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, text, created_at, due_at, done, position, parent_id, collapsed
-             FROM todos ORDER BY position ASC, id ASC",
+             FROM todos ORDER BY done ASC, position ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Todo {
@@ -295,6 +295,35 @@ mod tests {
         let todos = s.list().unwrap();
         assert_eq!(todos[0].text, "a");
         assert_eq!(todos[1].text, "b");
+    }
+
+    #[test]
+    fn done_items_sink_to_bottom() {
+        let s = mem_store();
+        let a = s.add("a", None, None).unwrap();
+        s.add("b", None, None).unwrap();
+        s.add("c", None, None).unwrap();
+
+        s.set_done(a, true).unwrap();
+        let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["b", "c", "a"]);
+
+        s.set_done(a, false).unwrap();
+        let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn done_children_sink_within_parent() {
+        let s = mem_store();
+        let p = s.add("p", None, None).unwrap();
+        let c1 = s.add("c1", None, Some(p)).unwrap();
+        s.add("c2", None, Some(p)).unwrap();
+        s.add("q", None, None).unwrap();
+
+        s.set_done(c1, true).unwrap();
+        let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["p", "c2", "c1", "q"]);
     }
 
     #[test]
