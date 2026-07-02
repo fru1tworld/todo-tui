@@ -10,6 +10,8 @@ pub struct Todo {
     pub due_at: Option<i64>,
     pub done: bool,
     pub position: i64,
+    pub parent_id: Option<i64>,
+    pub collapsed: bool,
 }
 
 impl Todo {
@@ -54,7 +56,9 @@ impl Store {
                 created_at INTEGER NOT NULL,
                 due_at     INTEGER,
                 done       INTEGER NOT NULL DEFAULT 0,
-                position   INTEGER NOT NULL DEFAULT 0
+                position   INTEGER NOT NULL DEFAULT 0,
+                parent_id  INTEGER,
+                collapsed  INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -69,8 +73,17 @@ impl Store {
                 "ALTER TABLE todos ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            // 기존 항목은 생성 순서(=id)를 초기 우선순위로 둔다.
             self.conn.execute("UPDATE todos SET position = id", [])?;
+        }
+        if !existing.iter().any(|c| c == "parent_id") {
+            self.conn
+                .execute("ALTER TABLE todos ADD COLUMN parent_id INTEGER", [])?;
+        }
+        if !existing.iter().any(|c| c == "collapsed") {
+            self.conn.execute(
+                "ALTER TABLE todos ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
         }
         Ok(())
     }
@@ -83,7 +96,7 @@ impl Store {
 
     pub fn list(&self) -> Result<Vec<Todo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, text, created_at, due_at, done, position
+            "SELECT id, text, created_at, due_at, done, position, parent_id, collapsed
              FROM todos ORDER BY position ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -94,21 +107,37 @@ impl Store {
                 due_at: row.get(3)?,
                 done: row.get::<_, i64>(4)? != 0,
                 position: row.get(5)?,
+                parent_id: row.get(6)?,
+                collapsed: row.get::<_, i64>(7)? != 0,
             })
         })?;
-        rows.collect()
+        let all: Vec<Todo> = rows.collect::<Result<_>>()?;
+
+        let mut out = Vec::with_capacity(all.len());
+        for parent in all.iter().filter(|t| t.parent_id.is_none()) {
+            out.push(parent.clone());
+            for child in all.iter().filter(|c| c.parent_id == Some(parent.id)) {
+                out.push(child.clone());
+            }
+        }
+        Ok(out)
     }
 
-    pub fn add(&self, text: &str, due_at: Option<i64>) -> Result<i64> {
+    pub fn next_position(&self) -> Result<i64> {
+        self.conn.query_row(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM todos",
+            [],
+            |r| r.get(0),
+        )
+    }
+
+    pub fn add(&self, text: &str, due_at: Option<i64>, parent_id: Option<i64>) -> Result<i64> {
         let now = Local::now().timestamp();
-        let next_pos: i64 =
-            self.conn
-                .query_row("SELECT COALESCE(MAX(position), 0) + 1 FROM todos", [], |r| {
-                    r.get(0)
-                })?;
+        let next_pos = self.next_position()?;
         self.conn.execute(
-            "INSERT INTO todos (text, created_at, due_at, done, position) VALUES (?1, ?2, ?3, 0, ?4)",
-            (text, now, due_at, next_pos),
+            "INSERT INTO todos (text, created_at, due_at, done, position, parent_id)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+            (text, now, due_at, next_pos, parent_id),
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -122,8 +151,18 @@ impl Store {
     }
 
     pub fn set_position(&self, id: i64, position: i64) -> Result<()> {
-        self.conn
-            .execute("UPDATE todos SET position = ?1 WHERE id = ?2", (position, id))?;
+        self.conn.execute(
+            "UPDATE todos SET position = ?1 WHERE id = ?2",
+            (position, id),
+        )?;
+        Ok(())
+    }
+
+    pub fn set_parent(&self, id: i64, parent_id: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE todos SET parent_id = ?1 WHERE id = ?2",
+            (parent_id, id),
+        )?;
         Ok(())
     }
 
@@ -134,13 +173,24 @@ impl Store {
     }
 
     pub fn set_done(&self, id: i64, done: bool) -> Result<()> {
-        self.conn
-            .execute("UPDATE todos SET done = ?1 WHERE id = ?2", (done as i64, id))?;
+        self.conn.execute(
+            "UPDATE todos SET done = ?1 WHERE id = ?2",
+            (done as i64, id),
+        )?;
+        Ok(())
+    }
+
+    pub fn set_collapsed(&self, id: i64, collapsed: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE todos SET collapsed = ?1 WHERE id = ?2",
+            (collapsed as i64, id),
+        )?;
         Ok(())
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM todos WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM todos WHERE id = ?1 OR parent_id = ?1", [id])?;
         Ok(())
     }
 }
@@ -192,7 +242,7 @@ mod tests {
         assert!(s.list().unwrap().is_empty());
 
         let due = parse_due("2026-07-01").unwrap();
-        let id = s.add("첫 번째 할 일", due).unwrap();
+        let id = s.add("첫 번째 할 일", due, None).unwrap();
         let todos = s.list().unwrap();
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].text, "첫 번째 할 일");
@@ -215,9 +265,9 @@ mod tests {
     #[test]
     fn add_assigns_increasing_position() {
         let s = mem_store();
-        s.add("a", None).unwrap();
-        s.add("b", None).unwrap();
-        s.add("c", None).unwrap();
+        s.add("a", None, None).unwrap();
+        s.add("b", None, None).unwrap();
+        s.add("c", None, None).unwrap();
         let todos = s.list().unwrap();
         assert!(todos[0].position < todos[1].position);
         assert!(todos[1].position < todos[2].position);
@@ -231,10 +281,16 @@ mod tests {
     fn orders_by_position() {
         let s = mem_store();
         s.conn
-            .execute("INSERT INTO todos (text, created_at, position) VALUES ('b', 100, 2)", [])
+            .execute(
+                "INSERT INTO todos (text, created_at, position) VALUES ('b', 100, 2)",
+                [],
+            )
             .unwrap();
         s.conn
-            .execute("INSERT INTO todos (text, created_at, position) VALUES ('a', 200, 1)", [])
+            .execute(
+                "INSERT INTO todos (text, created_at, position) VALUES ('a', 200, 1)",
+                [],
+            )
             .unwrap();
         let todos = s.list().unwrap();
         assert_eq!(todos[0].text, "a");
@@ -244,8 +300,8 @@ mod tests {
     #[test]
     fn set_position_reorders() {
         let s = mem_store();
-        let a = s.add("a", None).unwrap();
-        let b = s.add("b", None).unwrap();
+        let a = s.add("a", None, None).unwrap();
+        let b = s.add("b", None, None).unwrap();
         let (pa, pb) = {
             let todos = s.list().unwrap();
             (todos[0].position, todos[1].position)
@@ -269,8 +325,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO todos (text, created_at) VALUES ('old', 100)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO todos (text, created_at) VALUES ('old', 100)",
+            [],
+        )
+        .unwrap();
         let store = Store { conn };
         store.migrate().unwrap();
 
@@ -278,6 +337,28 @@ mod tests {
         assert_eq!(t.text, "old");
         assert_eq!(t.due_at, None);
         assert_eq!(t.position, t.id);
+    }
+
+    #[test]
+    fn list_nests_children_after_parent() {
+        let s = mem_store();
+        let a = s.add("a", None, None).unwrap();
+        s.add("b", None, None).unwrap();
+        s.add("a2", None, Some(a)).unwrap();
+        s.add("a1", None, Some(a)).unwrap();
+        let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
+        assert_eq!(texts, ["a", "a2", "a1", "b"]);
+    }
+
+    #[test]
+    fn delete_parent_removes_children() {
+        let s = mem_store();
+        let p = s.add("p", None, None).unwrap();
+        s.add("c1", None, Some(p)).unwrap();
+        s.add("c2", None, Some(p)).unwrap();
+        assert_eq!(s.list().unwrap().len(), 3);
+        s.delete(p).unwrap();
+        assert!(s.list().unwrap().is_empty());
     }
 
     #[test]
@@ -298,6 +379,8 @@ mod tests {
             due_at: Some(100),
             done: false,
             position: 1,
+            parent_id: None,
+            collapsed: false,
         };
         assert!(t.is_overdue(200));
         assert!(!t.is_overdue(50));
