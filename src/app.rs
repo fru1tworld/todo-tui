@@ -208,13 +208,11 @@ impl App {
                 self.store.set_done(*cid, new)?;
             }
         } else if let Some(pid) = parent_id {
-            self.store.set_done(id, !done)?;
-            let all_done = self
-                .todos
-                .iter()
-                .filter(|c| c.parent_id == Some(pid))
-                .all(|c| if c.id == id { !done } else { c.done });
-            self.store.set_done(pid, all_done)?;
+            let new = !done;
+            self.store.set_done(id, new)?;
+            if !new {
+                self.store.set_done(pid, false)?;
+            }
         } else {
             self.store.set_done(id, !done)?;
         }
@@ -261,18 +259,13 @@ impl App {
         }
         let new_parent = tops[idx - 1];
 
-        let others_done = self
-            .todos
-            .iter()
-            .filter(|c| c.parent_id == Some(new_parent))
-            .all(|c| c.done);
-        let parent_done = others_done && done;
-
         let pos = self.store.next_position()?;
         self.store.set_parent(id, Some(new_parent))?;
         self.store.set_position(id, pos)?;
         self.store.set_collapsed(new_parent, false)?;
-        self.store.set_done(new_parent, parent_done)?;
+        if !done {
+            self.store.set_done(new_parent, false)?;
+        }
         self.reload()?;
         self.select_id_or_first(Some(id));
         self.status = "하위로 넣음".to_string();
@@ -301,16 +294,6 @@ impl App {
         self.store.set_parent(id, None)?;
         for (i, tid) in order.iter().enumerate() {
             self.store.set_position(*tid, i as i64 + 1)?;
-        }
-
-        let remaining: Vec<bool> = self
-            .todos
-            .iter()
-            .filter(|c| c.parent_id == Some(pid) && c.id != id)
-            .map(|c| c.done)
-            .collect();
-        if !remaining.is_empty() {
-            self.store.set_done(pid, remaining.iter().all(|&d| d))?;
         }
 
         self.reload()?;
@@ -562,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn parent_autocompletes_when_all_children_done() {
+    fn parent_stays_open_when_all_children_done() {
         let mut app = app_with_subtasks();
         let p0 = app.todos[0].id;
         let a = app.todos.iter().find(|t| t.text == "child A").unwrap().id;
@@ -574,7 +557,22 @@ mod tests {
 
         app.select_id_or_first(Some(b));
         app.toggle_done().unwrap();
+        assert!(!app.todos.iter().find(|t| t.id == p0).unwrap().done);
+    }
+
+    #[test]
+    fn unchecking_child_reopens_done_parent() {
+        let mut app = app_with_subtasks();
+        let p0 = app.todos[0].id;
+        let a = app.todos.iter().find(|t| t.text == "child A").unwrap().id;
+
+        app.select_id_or_first(Some(p0));
+        app.toggle_done().unwrap();
         assert!(app.todos.iter().find(|t| t.id == p0).unwrap().done);
+
+        app.select_id_or_first(Some(a));
+        app.toggle_done().unwrap();
+        assert!(!app.todos.iter().find(|t| t.id == p0).unwrap().done);
     }
 
     #[test]
