@@ -2,7 +2,7 @@ use chrono::Local;
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
 };
@@ -81,22 +81,14 @@ fn input_cursor(area: Rect, input: &Input) -> Position {
 }
 
 fn title_bar(app: &App) -> Paragraph<'static> {
-    let (tag, tag_color) = match app.mode {
-        Mode::Insert => ("-- INSERT --", Color::Green),
-        Mode::Normal => ("-- NORMAL --", Color::Blue),
+    let tag = match app.mode {
+        Mode::Insert => "-- INSERT --".green().bold(),
+        Mode::Normal => "-- NORMAL --".blue().bold(),
     };
     let top_level = app.todos.iter().filter(|t| t.parent_id.is_none()).count();
     Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" To-Do  ({top_level}개)  "),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            tag,
-            Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
-        ),
+        format!(" To-Do  ({top_level}개)  ").cyan().bold(),
+        tag,
     ]))
     .block(Block::default().borders(Borders::ALL))
 }
@@ -134,7 +126,7 @@ fn todo_list(app: &App, width: u16) -> List<'static> {
                 .borders(Borders::ALL)
                 .title(" 목록  [ ] 시각 내용 "),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD))
+        .highlight_style(Style::new().reversed().bold())
         .highlight_symbol("▶ ")
 }
 
@@ -148,13 +140,10 @@ fn bottom_panel(app: &App, inner_width: u16) -> Paragraph<'static> {
         Mode::Normal => {
             let mut lines = wrap_commands(HELP_GROUPS, inner_width);
             if !app.status.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    app.status.clone(),
-                    Style::default().fg(Color::Yellow),
-                )));
+                lines.push(Line::from(app.status.clone().yellow()));
             }
             Paragraph::new(lines)
-                .style(Style::default().add_modifier(Modifier::DIM))
+                .dim()
                 .block(Block::default().borders(Borders::ALL).title(" 안내 "))
         }
     }
@@ -208,7 +197,7 @@ fn parent_line(
 
     if has_children {
         let caret = if t.collapsed { "▸ " } else { "▾ " };
-        prefix.push(Span::styled(caret, Style::default().add_modifier(Modifier::DIM)));
+        prefix.push(caret.dim());
     } else {
         prefix.push(Span::raw("  "));
     }
@@ -219,15 +208,12 @@ fn parent_line(
 
     let mut suffix = Vec::new();
     if has_children {
-        let style = if done_children == total_children {
-            Style::default().fg(Color::Green)
+        let badge = format!("  ({done_children}/{total_children})");
+        suffix.push(if done_children == total_children {
+            badge.green()
         } else {
-            Style::default().add_modifier(Modifier::DIM)
-        };
-        suffix.push(Span::styled(
-            format!("  ({done_children}/{total_children})"),
-            style,
-        ));
+            badge.dim()
+        });
     }
     push_due(&mut suffix, t, now);
 
@@ -237,7 +223,7 @@ fn parent_line(
 fn child_line(t: &Todo, now: i64, is_last: bool, width: usize) -> ListItem<'static> {
     let branch = if is_last { "    └ " } else { "    ├ " };
     let prefix = vec![
-        Span::styled(branch, Style::default().add_modifier(Modifier::DIM)),
+        branch.dim(),
         checkbox(t.done),
         timestamp_badge(t.created_at_string()),
         Span::raw(" "),
@@ -340,33 +326,29 @@ fn wrap_width(text: &str, width: usize) -> Vec<String> {
 }
 
 fn checkbox(done: bool) -> Span<'static> {
-    if done {
-        Span::styled("[x] ", Style::default().fg(Color::Green))
-    } else {
-        Span::styled("[ ] ", Style::default().add_modifier(Modifier::DIM))
-    }
+    if done { "[x] ".green() } else { "[ ] ".dim() }
 }
 
 fn timestamp_badge(ts: String) -> Span<'static> {
-    Span::styled(format!(" {ts} "), Style::default().add_modifier(Modifier::DIM))
+    format!(" {ts} ").dim()
 }
 
 fn content_style(done: bool) -> Style {
     if done {
-        Style::default().add_modifier(Modifier::DIM | Modifier::CROSSED_OUT)
+        Style::new().dim().crossed_out()
     } else {
-        Style::default()
+        Style::new()
     }
 }
 
 fn push_due(spans: &mut Vec<Span<'static>>, t: &Todo, now: i64) {
     if let Some(due) = t.due_string() {
-        let style = if t.is_overdue(now) {
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        let badge = format!("   ⏳ {due}");
+        spans.push(if t.is_overdue(now) {
+            badge.red().bold()
         } else {
-            Style::default().add_modifier(Modifier::DIM)
-        };
-        spans.push(Span::styled(format!("   ⏳ {due}"), style));
+            badge.dim()
+        });
     }
 }
 
@@ -378,7 +360,7 @@ fn input_box(label: &str, input: &Input, box_width: u16) -> Paragraph<'static> {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Yellow))
+                .border_style(Style::new().yellow())
                 .title(format!(" {label} ")),
         )
 }
