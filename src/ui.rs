@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
 };
+use tui_input::Input;
 
 use crate::app::{App, Mode};
 use crate::db::Todo;
@@ -52,22 +53,27 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     let editing = if let Some(popup) = &app.popup {
         let area = centered_rect(60, 3, f.area());
         f.render_widget(Clear, area);
-        f.render_widget(input_box(popup.kind.label(), &popup.input), area);
-        Some((area, popup.input.as_str()))
+        f.render_widget(input_box(popup.kind.label(), &popup.input, area.width), area);
+        Some((area, &popup.input))
     } else if app.mode == Mode::Insert {
-        Some((bot, app.input.as_str()))
+        Some((bot, &app.input))
     } else {
         None
     };
-    if let Some((area, text)) = editing {
-        f.set_cursor_position(input_cursor(area, text));
+    if let Some((area, input)) = editing {
+        f.set_cursor_position(input_cursor(area, input));
     }
 }
 
-fn input_cursor(area: Rect, text: &str) -> Position {
-    use unicode_width::UnicodeWidthStr;
+/// 입력 박스 내부 폭(테두리 2 + 커서 여유 1 제외).
+fn input_inner_width(box_width: u16) -> usize {
+    box_width.saturating_sub(3) as usize
+}
 
-    let x = area.x + 1 + text.width() as u16;
+fn input_cursor(area: Rect, input: &Input) -> Position {
+    let inner = input_inner_width(area.width);
+    let scroll = input.visual_scroll(inner);
+    let x = area.x + 1 + input.visual_cursor().saturating_sub(scroll) as u16;
     Position {
         x: x.min(area.right().saturating_sub(2)),
         y: area.y + 1,
@@ -134,7 +140,11 @@ fn todo_list(app: &App, width: u16) -> List<'static> {
 
 fn bottom_panel(app: &App, inner_width: u16) -> Paragraph<'static> {
     match app.mode {
-        Mode::Insert => input_box("새 할 일 (Enter 추가 · Esc 명령모드)", &app.input),
+        Mode::Insert => input_box(
+            "새 할 일 (Enter 추가 · Esc 명령모드)",
+            &app.input,
+            inner_width + 2,
+        ),
         Mode::Normal => {
             let mut lines = wrap_commands(HELP_GROUPS, inner_width);
             if !app.status.is_empty() {
@@ -360,14 +370,17 @@ fn push_due(spans: &mut Vec<Span<'static>>, t: &Todo, now: i64) {
     }
 }
 
-fn input_box(label: &str, value: &str) -> Paragraph<'static> {
-    Paragraph::new(value.to_string()).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Yellow))
-            .title(format!(" {label} ")),
-    )
+fn input_box(label: &str, input: &Input, box_width: u16) -> Paragraph<'static> {
+    let scroll = input.visual_scroll(input_inner_width(box_width));
+    Paragraph::new(input.value().to_string())
+        .scroll((0, scroll as u16))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(format!(" {label} ")),
+        )
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {

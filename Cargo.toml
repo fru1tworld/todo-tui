@@ -9,3 +9,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = "0.4"
 dirs = "6"
 unicode-width = "0.2"
+anyhow = "1.0.103"
+thiserror = "2.0.18"
+textwrap = "0.16.2"
+tui-input = { version = "0.15.3", default-features = false }

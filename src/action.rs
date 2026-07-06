@@ -1,4 +1,5 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tui_input::InputRequest;
 
 use crate::app::{App, Mode};
 
@@ -7,8 +8,7 @@ pub(crate) enum Action {
     Quit,
     EnterInsert,
     EnterNormal,
-    InsertChar(char),
-    InsertBackspace,
+    Input(InputRequest),
     CommitInsert,
     Select(isize),
     Reorder(isize),
@@ -20,8 +20,7 @@ pub(crate) enum Action {
     OpenEdit,
     OpenDue,
     OpenSubtask,
-    PopupChar(char),
-    PopupBackspace,
+    PopupInput(InputRequest),
     PopupCommit,
     PopupCancel,
 }
@@ -31,46 +30,70 @@ pub(crate) enum Flow {
     Quit,
 }
 
+/// 키 입력을 텍스트 편집 요청으로 변환한다(커서 이동·단어 삭제 포함).
+fn edit_request(key: KeyEvent) -> Option<InputRequest> {
+    use InputRequest::*;
+
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Backspace if ctrl => DeletePrevWord,
+        KeyCode::Backspace => DeletePrevChar,
+        KeyCode::Delete => DeleteNextChar,
+        KeyCode::Left if ctrl => GoToPrevWord,
+        KeyCode::Right if ctrl => GoToNextWord,
+        KeyCode::Left => GoToPrevChar,
+        KeyCode::Right => GoToNextChar,
+        KeyCode::Home => GoToStart,
+        KeyCode::End => GoToEnd,
+        KeyCode::Char('w') if ctrl => DeletePrevWord,
+        KeyCode::Char('u') if ctrl => DeleteLine,
+        KeyCode::Char('a') if ctrl => GoToStart,
+        KeyCode::Char('e') if ctrl => GoToEnd,
+        KeyCode::Char('k') if ctrl => DeleteTillEnd,
+        KeyCode::Char(c) if !ctrl => InsertChar(c),
+        _ => return None,
+    })
+}
+
 pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
     use Action::*;
-    use KeyCode::{Backspace, Char, Down, Enter, Esc, Left, Right, Up};
+    use KeyCode::{Char, Down, Enter, Esc, Left, Right, Up};
 
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     if app.popup.is_some() {
-        return Some(match key.code {
-            Esc => PopupCancel,
-            Enter => PopupCommit,
-            Backspace => PopupBackspace,
-            Char(c) => PopupChar(c),
-            _ => return None,
-        });
+        return match key.code {
+            Esc => Some(PopupCancel),
+            Enter => Some(PopupCommit),
+            _ => edit_request(key).map(PopupInput),
+        };
     }
+
+    // 입력 중(내용이 있을 때)에는 ←→ 를 커서 이동에 양보한다.
+    let editing = app.mode == Mode::Insert && !app.input.value().is_empty();
 
     let nav = match key.code {
         Up if shift => Some(Reorder(-1)),
         Down if shift => Some(Reorder(1)),
-        Left if shift => Some(Indent),
-        Right if shift => Some(Outdent),
+        Left if shift && !editing => Some(Indent),
+        Right if shift && !editing => Some(Outdent),
         Up => Some(Select(-1)),
         Down => Some(Select(1)),
-        Left => Some(Collapse(true)),
-        Right => Some(Collapse(false)),
+        Left if !editing => Some(Collapse(true)),
+        Right if !editing => Some(Collapse(false)),
         _ => None,
     };
     if nav.is_some() {
         return nav;
     }
 
-    Some(match app.mode {
+    match app.mode {
         Mode::Insert => match key.code {
-            Esc => EnterNormal,
-            Enter => CommitInsert,
-            Backspace => InsertBackspace,
-            Char(c) => InsertChar(c),
-            _ => return None,
+            Esc => Some(EnterNormal),
+            Enter => Some(CommitInsert),
+            _ => edit_request(key).map(Input),
         },
-        Mode::Normal => match key.code {
+        Mode::Normal => Some(match key.code {
             Char('q') => Quit,
             Char('i' | 'a') | Esc => EnterInsert,
             Char('e') => OpenEdit,
@@ -83,6 +106,6 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
             Char('l') => Collapse(false),
             Char('h') => Collapse(true),
             _ => return None,
-        },
-    })
+        }),
+    }
 }

@@ -1,4 +1,5 @@
 use ratatui::widgets::ListState;
+use tui_input::Input;
 
 use crate::action::{Action, Flow};
 use crate::db::{Store, Todo, parse_due};
@@ -28,7 +29,7 @@ impl PopupKind {
 
 pub(crate) struct Popup {
     pub(crate) kind: PopupKind,
-    pub(crate) input: String,
+    pub(crate) input: Input,
 }
 
 pub(crate) struct App {
@@ -37,7 +38,7 @@ pub(crate) struct App {
     pub(crate) visible: Vec<usize>,
     pub(crate) state: ListState,
     pub(crate) mode: Mode,
-    pub(crate) input: String,
+    pub(crate) input: Input,
     pub(crate) popup: Option<Popup>,
     pub(crate) status: String,
 }
@@ -50,7 +51,7 @@ impl App {
             visible: Vec::new(),
             state: ListState::default(),
             mode: Mode::Insert,
-            input: String::new(),
+            input: Input::default(),
             popup: None,
             status: String::new(),
         };
@@ -65,9 +66,8 @@ impl App {
             Action::Quit => return Ok(Flow::Quit),
             Action::EnterInsert => self.mode = Mode::Insert,
             Action::EnterNormal => self.mode = Mode::Normal,
-            Action::InsertChar(c) => self.input.push(c),
-            Action::InsertBackspace => {
-                self.input.pop();
+            Action::Input(req) => {
+                self.input.handle(req);
             }
             Action::CommitInsert => self.commit_insert()?,
             Action::Select(delta) => self.move_selection(delta),
@@ -80,14 +80,9 @@ impl App {
             Action::OpenEdit => self.open_edit(),
             Action::OpenDue => self.open_due(),
             Action::OpenSubtask => self.open_subtask(),
-            Action::PopupChar(c) => {
+            Action::PopupInput(req) => {
                 if let Some(popup) = &mut self.popup {
-                    popup.input.push(c);
-                }
-            }
-            Action::PopupBackspace => {
-                if let Some(popup) = &mut self.popup {
-                    popup.input.pop();
+                    popup.input.handle(req);
                 }
             }
             Action::PopupCommit => self.popup_commit()?,
@@ -312,20 +307,23 @@ impl App {
     }
 
     fn commit_insert(&mut self) -> rusqlite::Result<()> {
-        let text = self.input.trim();
+        let text = self.input.value().trim().to_string();
         if !text.is_empty() {
-            let id = self.store.add(text, None, None)?;
+            let id = self.store.add(&text, None, None)?;
             self.reload()?;
             self.select_id_or_first(Some(id));
             self.status = "추가됨".to_string();
         }
-        self.input.clear();
+        self.input.reset();
         Ok(())
     }
 
     fn open_popup(&mut self, kind: PopupKind, input: String) {
         self.status = "Enter 저장  Esc 취소".to_string();
-        self.popup = Some(Popup { kind, input });
+        self.popup = Some(Popup {
+            kind,
+            input: Input::new(input),
+        });
     }
 
     fn open_edit(&mut self) {
@@ -359,9 +357,11 @@ impl App {
             return Ok(());
         };
         let committed = match popup.kind {
-            PopupKind::Edit { id } => self.commit_edit(id, &popup.input)?,
-            PopupKind::Due { id } => self.commit_due(id, &popup.input)?,
-            PopupKind::Subtask { parent_id } => self.commit_subtask(parent_id, &popup.input)?,
+            PopupKind::Edit { id } => self.commit_edit(id, popup.input.value())?,
+            PopupKind::Due { id } => self.commit_due(id, popup.input.value())?,
+            PopupKind::Subtask { parent_id } => {
+                self.commit_subtask(parent_id, popup.input.value())?
+            }
         };
         if let Err(msg) = committed {
             self.status = msg;
@@ -446,12 +446,12 @@ mod tests {
     #[test]
     fn insert_adds_todo() {
         let mut app = app_with_todos(0);
-        app.input = "장보기".to_string();
+        app.input = Input::new("장보기".to_string());
         app.commit_insert().unwrap();
         let todos = app.store.list().unwrap();
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].text, "장보기");
-        assert!(app.input.is_empty());
+        assert!(app.input.value().is_empty());
     }
 
     #[test]
