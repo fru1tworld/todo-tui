@@ -283,46 +283,18 @@ fn wrapped_lines(
     lines
 }
 
-/// 표시 폭 기준 줄바꿈. 단어(공백) 단위로 자르되, 한 단어가 폭보다 길면 글자 단위로 자른다.
+/// 표시 폭 기준 줄바꿈(textwrap). 공백 단위로 자르되, 한 단어가 폭보다 길면 글자 단위로 자른다.
 fn wrap_width(text: &str, width: usize) -> Vec<String> {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    use textwrap::{Options, WordSeparator, WordSplitter};
 
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    let mut cur = String::new();
-    let mut cur_w = 0usize;
-
-    for word in text.split(' ') {
-        let w = word.width();
-        if !cur.is_empty() {
-            if cur_w + 1 + w <= width {
-                cur.push(' ');
-                cur.push_str(word);
-                cur_w += 1 + w;
-                continue;
-            }
-            lines.push(std::mem::take(&mut cur));
-            cur_w = 0;
-        }
-        if w <= width {
-            cur.push_str(word);
-            cur_w = w;
-        } else {
-            for ch in word.chars() {
-                let cw = ch.width().unwrap_or(0);
-                if cur_w + cw > width {
-                    lines.push(std::mem::take(&mut cur));
-                    cur_w = 0;
-                }
-                cur.push(ch);
-                cur_w += cw;
-            }
-        }
-    }
-    if !cur.is_empty() || lines.is_empty() {
-        lines.push(cur);
-    }
-    lines
+    // 기본 unicode-linebreak 규칙은 한글을 음절 단위로 끊으므로 공백 기준으로 고정한다.
+    let options = Options::new(width.max(1))
+        .word_separator(WordSeparator::AsciiSpace)
+        .word_splitter(WordSplitter::NoHyphenation);
+    textwrap::wrap(text, options)
+        .into_iter()
+        .map(|line| line.into_owned())
+        .collect()
 }
 
 fn checkbox(done: bool) -> Span<'static> {
