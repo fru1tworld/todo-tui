@@ -53,7 +53,10 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     let editing = if let Some(popup) = &app.popup {
         let area = centered_rect(60, 3, f.area());
         f.render_widget(Clear, area);
-        f.render_widget(input_box(popup.kind.label(), &popup.input, area.width), area);
+        f.render_widget(
+            input_box(popup.kind.label(), &popup.input, area.width),
+            area,
+        );
         Some((area, &popup.input))
     } else if app.mode == Mode::Insert {
         Some((bot, &app.input))
@@ -365,7 +368,8 @@ mod tests {
         assert_eq!(wrap_width("가나다라마", 4), vec!["가나", "다라", "마"]);
         // 표시 폭이 넘치는 줄이 없어야 함
         use unicode_width::UnicodeWidthStr;
-        for line in wrap_width("이벤트 소싱 카산드라 DB에서 PSQL로 마이그레이션", 12) {
+        for line in wrap_width("이벤트 소싱 카산드라 DB에서 PSQL로 마이그레이션", 12)
+        {
             assert!(line.width() <= 12, "폭 초과: {line}");
         }
     }
