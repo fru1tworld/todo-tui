@@ -9,7 +9,6 @@ pub struct Todo {
     pub created_at: i64,
     pub due_at: Option<i64>,
     pub done: bool,
-    pub position: i64,
     pub parent_id: Option<i64>,
     pub collapsed: bool,
 }
@@ -42,61 +41,34 @@ impl Store {
     }
 
     pub fn open(path: PathBuf) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        Self::from_connection(Connection::open(path)?)
+    }
+
+    fn from_connection(conn: Connection) -> Result<Self> {
         let store = Self { conn };
         store.migrate()?;
+        // 마이그레이션(테이블 재구축) 이후에만 외래 키 검사를 켠다.
+        store.conn.pragma_update(None, "foreign_keys", true)?;
         Ok(store)
     }
 
+    /// PRAGMA user_version 기반 버전 마이그레이션.
     fn migrate(&self) -> Result<()> {
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS todos (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                text       TEXT    NOT NULL,
-                created_at INTEGER NOT NULL,
-                due_at     INTEGER,
-                done       INTEGER NOT NULL DEFAULT 0,
-                position   INTEGER NOT NULL DEFAULT 0,
-                parent_id  INTEGER,
-                collapsed  INTEGER NOT NULL DEFAULT 0
-            )",
-            [],
-        )?;
-
-        let existing = self.column_names()?;
-        if !existing.iter().any(|c| c == "due_at") {
-            self.conn
-                .execute("ALTER TABLE todos ADD COLUMN due_at INTEGER", [])?;
-        }
-        if !existing.iter().any(|c| c == "position") {
-            self.conn.execute(
-                "ALTER TABLE todos ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-            self.conn.execute("UPDATE todos SET position = id", [])?;
-        }
-        if !existing.iter().any(|c| c == "parent_id") {
-            self.conn
-                .execute("ALTER TABLE todos ADD COLUMN parent_id INTEGER", [])?;
-        }
-        if !existing.iter().any(|c| c == "collapsed") {
-            self.conn.execute(
-                "ALTER TABLE todos ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 1 {
+            let tx = self.conn.unchecked_transaction()?;
+            migrate_v1(&tx)?;
+            tx.pragma_update(None, "user_version", 1)?;
+            tx.commit()?;
         }
         Ok(())
     }
 
-    fn column_names(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("PRAGMA table_info(todos)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect()
-    }
-
     pub fn list(&self) -> Result<Vec<Todo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, text, created_at, due_at, done, position, parent_id, collapsed
+            "SELECT id, text, created_at, due_at, done, parent_id, collapsed
              FROM todos ORDER BY done ASC, position ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -106,9 +78,8 @@ impl Store {
                 created_at: row.get(2)?,
                 due_at: row.get(3)?,
                 done: row.get::<_, i64>(4)? != 0,
-                position: row.get(5)?,
-                parent_id: row.get(6)?,
-                collapsed: row.get::<_, i64>(7)? != 0,
+                parent_id: row.get(5)?,
+                collapsed: row.get::<_, i64>(6)? != 0,
             })
         })?;
         let all: Vec<Todo> = rows.collect::<Result<_>>()?;
@@ -123,23 +94,23 @@ impl Store {
         Ok(out)
     }
 
-    pub fn next_position(&self) -> Result<i64> {
-        self.conn.query_row(
-            "SELECT COALESCE(MAX(position), 0) + 1 FROM todos",
-            [],
-            |r| r.get(0),
-        )
+    pub fn add(&self, text: &str, due_at: Option<i64>, parent_id: Option<i64>) -> Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id = insert_todo(&tx, text, due_at, parent_id)?;
+        tx.commit()?;
+        Ok(id)
     }
 
-    pub fn add(&self, text: &str, due_at: Option<i64>, parent_id: Option<i64>) -> Result<i64> {
-        let now = Local::now().timestamp();
-        let next_pos = self.next_position()?;
-        self.conn.execute(
-            "INSERT INTO todos (text, created_at, due_at, done, position, parent_id)
-             VALUES (?1, ?2, ?3, 0, ?4, ?5)",
-            (text, now, due_at, next_pos, parent_id),
+    /// 하위 목표 추가 + 부모 완료 해제·펼치기를 한 트랜잭션으로 처리한다.
+    pub fn add_subtask(&self, text: &str, parent_id: i64) -> Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id = insert_todo(&tx, text, None, Some(parent_id))?;
+        tx.execute(
+            "UPDATE todos SET done = 0, collapsed = 0 WHERE id = ?1",
+            [parent_id],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        tx.commit()?;
+        Ok(id)
     }
 
     pub fn update(&self, id: i64, text: &str, due_at: Option<i64>) -> Result<()> {
@@ -150,33 +121,67 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_position(&self, id: i64, position: i64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE todos SET position = ?1 WHERE id = ?2",
-            (position, id),
-        )?;
-        Ok(())
+    /// 두 항목의 position을 한 트랜잭션으로 맞바꾼다.
+    pub fn swap_positions(&self, a: i64, b: i64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let pa: i64 = tx.query_row("SELECT position FROM todos WHERE id = ?1", [a], |r| {
+            r.get(0)
+        })?;
+        let pb: i64 = tx.query_row("SELECT position FROM todos WHERE id = ?1", [b], |r| {
+            r.get(0)
+        })?;
+        tx.execute("UPDATE todos SET position = ?1 WHERE id = ?2", (pb, a))?;
+        tx.execute("UPDATE todos SET position = ?1 WHERE id = ?2", (pa, b))?;
+        tx.commit()
     }
 
-    pub fn set_parent(&self, id: i64, parent_id: Option<i64>) -> Result<()> {
-        self.conn.execute(
-            "UPDATE todos SET parent_id = ?1 WHERE id = ?2",
-            (parent_id, id),
+    /// 여러 항목의 완료 상태를 한 트랜잭션으로 갱신한다(부모-자식 전파용).
+    pub fn set_done_many(&self, updates: &[(i64, bool)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE todos SET done = ?1 WHERE id = ?2")?;
+            for &(id, done) in updates {
+                stmt.execute((done as i64, id))?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// 항목을 부모 밑으로 넣고 맨 뒤 position 부여, 부모 펼침(필요 시 완료 해제)까지 한 트랜잭션.
+    pub fn indent(&self, id: i64, parent: i64, reopen_parent: bool) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let pos: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM todos",
+            [],
+            |r| r.get(0),
         )?;
-        Ok(())
+        tx.execute(
+            "UPDATE todos SET parent_id = ?1, position = ?2 WHERE id = ?3",
+            (parent, pos, id),
+        )?;
+        tx.execute("UPDATE todos SET collapsed = 0 WHERE id = ?1", [parent])?;
+        if reopen_parent {
+            tx.execute("UPDATE todos SET done = 0 WHERE id = ?1", [parent])?;
+        }
+        tx.commit()
+    }
+
+    /// 항목을 최상위로 빼고 전달받은 최상위 순서대로 position을 다시 매긴다.
+    pub fn outdent(&self, id: i64, top_order: &[i64]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE todos SET parent_id = NULL WHERE id = ?1", [id])?;
+        {
+            let mut stmt = tx.prepare("UPDATE todos SET position = ?1 WHERE id = ?2")?;
+            for (i, tid) in top_order.iter().enumerate() {
+                stmt.execute((i as i64 + 1, tid))?;
+            }
+        }
+        tx.commit()
     }
 
     pub fn set_due(&self, id: i64, due_at: Option<i64>) -> Result<()> {
         self.conn
             .execute("UPDATE todos SET due_at = ?1 WHERE id = ?2", (due_at, id))?;
-        Ok(())
-    }
-
-    pub fn set_done(&self, id: i64, done: bool) -> Result<()> {
-        self.conn.execute(
-            "UPDATE todos SET done = ?1 WHERE id = ?2",
-            (done as i64, id),
-        )?;
         Ok(())
     }
 
@@ -189,10 +194,92 @@ impl Store {
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM todos WHERE id = ?1 OR parent_id = ?1", [id])?;
+        // 자식 삭제는 parent_id의 ON DELETE CASCADE가 처리한다.
+        self.conn.execute("DELETE FROM todos WHERE id = ?1", [id])?;
         Ok(())
     }
+}
+
+fn insert_todo(
+    conn: &Connection,
+    text: &str,
+    due_at: Option<i64>,
+    parent_id: Option<i64>,
+) -> Result<i64> {
+    let now = Local::now().timestamp();
+    let pos: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), 0) + 1 FROM todos",
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO todos (text, created_at, due_at, done, position, parent_id)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+        (text, now, due_at, pos, parent_id),
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// v1: 최종 스키마로 재구축한다. 레거시 테이블(누락 컬럼 포함)을 흡수하고
+/// parent_id에 ON DELETE CASCADE 외래 키를 건다.
+fn migrate_v1(conn: &Connection) -> Result<()> {
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todos')",
+        [],
+        |r| r.get(0),
+    )?;
+
+    if has_table {
+        // 레거시 스키마에 없는 컬럼을 먼저 채워 아래 복사 SELECT 목록을 통일한다.
+        let existing = column_names(conn)?;
+        if !existing.iter().any(|c| c == "due_at") {
+            conn.execute("ALTER TABLE todos ADD COLUMN due_at INTEGER", [])?;
+        }
+        if !existing.iter().any(|c| c == "position") {
+            conn.execute(
+                "ALTER TABLE todos ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute("UPDATE todos SET position = id", [])?;
+        }
+        if !existing.iter().any(|c| c == "parent_id") {
+            conn.execute("ALTER TABLE todos ADD COLUMN parent_id INTEGER", [])?;
+        }
+        if !existing.iter().any(|c| c == "collapsed") {
+            conn.execute(
+                "ALTER TABLE todos ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE todos_v1 (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            text       TEXT    NOT NULL,
+            created_at INTEGER NOT NULL,
+            due_at     INTEGER,
+            done       INTEGER NOT NULL DEFAULT 0,
+            position   INTEGER NOT NULL DEFAULT 0,
+            parent_id  INTEGER REFERENCES todos_v1(id) ON DELETE CASCADE,
+            collapsed  INTEGER NOT NULL DEFAULT 0
+        )",
+    )?;
+    if has_table {
+        conn.execute_batch(
+            "INSERT INTO todos_v1 (id, text, created_at, due_at, done, position, parent_id, collapsed)
+             SELECT id, text, created_at, due_at, done, position, parent_id, collapsed FROM todos;
+             DROP TABLE todos;",
+        )?;
+    }
+    conn.execute("ALTER TABLE todos_v1 RENAME TO todos", [])?;
+    Ok(())
+}
+
+fn column_names(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("PRAGMA table_info(todos)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    rows.collect()
 }
 
 fn format_epoch(epoch: i64, fmt: &str) -> String {
@@ -232,10 +319,15 @@ mod tests {
     use super::*;
 
     fn mem_store() -> Store {
-        let conn = Connection::open_in_memory().unwrap();
-        let store = Store { conn };
-        store.migrate().unwrap();
-        store
+        Store::from_connection(Connection::open_in_memory().unwrap()).unwrap()
+    }
+
+    fn position_of(s: &Store, id: i64) -> i64 {
+        s.conn
+            .query_row("SELECT position FROM todos WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
     }
 
     #[test]
@@ -257,7 +349,7 @@ mod tests {
         assert_eq!(t.text, "수정됨");
         assert_eq!(t.due_at, None);
 
-        s.set_done(id, true).unwrap();
+        s.set_done_many(&[(id, true)]).unwrap();
         assert!(s.list().unwrap()[0].done);
 
         s.delete(id).unwrap();
@@ -267,14 +359,17 @@ mod tests {
     #[test]
     fn add_assigns_increasing_position() {
         let s = mem_store();
-        s.add("a", None, None).unwrap();
-        s.add("b", None, None).unwrap();
-        s.add("c", None, None).unwrap();
-        let todos = s.list().unwrap();
-        assert!(todos[0].position < todos[1].position);
-        assert!(todos[1].position < todos[2].position);
+        let a = s.add("a", None, None).unwrap();
+        let b = s.add("b", None, None).unwrap();
+        let c = s.add("c", None, None).unwrap();
+        assert!(position_of(&s, a) < position_of(&s, b));
+        assert!(position_of(&s, b) < position_of(&s, c));
         assert_eq!(
-            todos.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            s.list()
+                .unwrap()
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>(),
             ["a", "b", "c"]
         );
     }
@@ -306,11 +401,11 @@ mod tests {
         s.add("b", None, None).unwrap();
         s.add("c", None, None).unwrap();
 
-        s.set_done(a, true).unwrap();
+        s.set_done_many(&[(a, true)]).unwrap();
         let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
         assert_eq!(texts, ["b", "c", "a"]);
 
-        s.set_done(a, false).unwrap();
+        s.set_done_many(&[(a, false)]).unwrap();
         let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
         assert_eq!(texts, ["a", "b", "c"]);
     }
@@ -323,22 +418,17 @@ mod tests {
         s.add("c2", None, Some(p)).unwrap();
         s.add("q", None, None).unwrap();
 
-        s.set_done(c1, true).unwrap();
+        s.set_done_many(&[(c1, true)]).unwrap();
         let texts: Vec<_> = s.list().unwrap().iter().map(|t| t.text.clone()).collect();
         assert_eq!(texts, ["p", "c2", "c1", "q"]);
     }
 
     #[test]
-    fn set_position_reorders() {
+    fn swap_positions_reorders() {
         let s = mem_store();
         let a = s.add("a", None, None).unwrap();
         let b = s.add("b", None, None).unwrap();
-        let (pa, pb) = {
-            let todos = s.list().unwrap();
-            (todos[0].position, todos[1].position)
-        };
-        s.set_position(a, pb).unwrap();
-        s.set_position(b, pa).unwrap();
+        s.swap_positions(a, b).unwrap();
         let todos = s.list().unwrap();
         assert_eq!(todos[0].text, "b");
         assert_eq!(todos[1].text, "a");
@@ -361,13 +451,52 @@ mod tests {
             [],
         )
         .unwrap();
-        let store = Store { conn };
-        store.migrate().unwrap();
+        let store = Store::from_connection(conn).unwrap();
 
         let t = &store.list().unwrap()[0];
         assert_eq!(t.text, "old");
         assert_eq!(t.due_at, None);
-        assert_eq!(t.position, t.id);
+        assert_eq!(position_of(&store, t.id), t.id);
+    }
+
+    #[test]
+    fn migrates_v0_full_schema_and_cascades() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE todos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                text       TEXT    NOT NULL,
+                created_at INTEGER NOT NULL,
+                due_at     INTEGER,
+                done       INTEGER NOT NULL DEFAULT 0,
+                position   INTEGER NOT NULL DEFAULT 0,
+                parent_id  INTEGER,
+                collapsed  INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO todos (id, text, created_at, position) VALUES (1, 'p', 100, 1);
+            INSERT INTO todos (id, text, created_at, position, parent_id)
+                VALUES (2, 'c', 100, 2, 1);",
+        )
+        .unwrap();
+        let store = Store::from_connection(conn).unwrap();
+
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+
+        let texts: Vec<_> = store
+            .list()
+            .unwrap()
+            .iter()
+            .map(|t| t.text.clone())
+            .collect();
+        assert_eq!(texts, ["p", "c"]);
+
+        // 재구축된 테이블의 FK CASCADE로 자식까지 지워진다.
+        store.delete(1).unwrap();
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]
@@ -409,7 +538,6 @@ mod tests {
             created_at: 0,
             due_at: Some(100),
             done: false,
-            position: 1,
             parent_id: None,
             collapsed: false,
         };

@@ -159,27 +159,26 @@ impl App {
         };
         let (id, parent_id) = (cur.id, cur.parent_id);
 
-        let siblings: Vec<(i64, i64, bool)> = self
+        let siblings: Vec<(i64, bool)> = self
             .todos
             .iter()
             .filter(|t| t.parent_id == parent_id)
-            .map(|t| (t.id, t.position, t.done))
+            .map(|t| (t.id, t.done))
             .collect();
-        let Some(idx) = siblings.iter().position(|(sid, _, _)| *sid == id) else {
+        let Some(idx) = siblings.iter().position(|(sid, _)| *sid == id) else {
             return Ok(());
         };
         let j = idx as isize + delta;
         if j < 0 || j as usize >= siblings.len() {
             return Ok(());
         }
-        let (a_id, a_pos, a_done) = siblings[idx];
-        let (b_id, b_pos, b_done) = siblings[j as usize];
+        let (a_id, a_done) = siblings[idx];
+        let (b_id, b_done) = siblings[j as usize];
         if a_done != b_done {
             self.status = "완료 항목은 미완료 항목과 자리를 바꿀 수 없어요".to_string();
             return Ok(());
         }
-        self.store.set_position(a_id, b_pos)?;
-        self.store.set_position(b_id, a_pos)?;
+        self.store.swap_positions(a_id, b_id)?;
         self.reload()?;
         self.status = "순서 이동됨".to_string();
         Ok(())
@@ -197,21 +196,18 @@ impl App {
             .map(|c| c.id)
             .collect();
 
+        let new = !done;
+        let mut updates = vec![(id, new)];
         if !child_ids.is_empty() {
-            let new = !done;
-            self.store.set_done(id, new)?;
-            for cid in &child_ids {
-                self.store.set_done(*cid, new)?;
-            }
-        } else if let Some(pid) = parent_id {
-            let new = !done;
-            self.store.set_done(id, new)?;
-            if !new {
-                self.store.set_done(pid, false)?;
-            }
-        } else {
-            self.store.set_done(id, !done)?;
+            // 부모 체크는 자식 전체에 전파된다.
+            updates.extend(child_ids.iter().map(|&cid| (cid, new)));
+        } else if let Some(pid) = parent_id
+            && !new
+        {
+            // 자식 해제는 완료된 부모를 다시 연다.
+            updates.push((pid, false));
         }
+        self.store.set_done_many(&updates)?;
         self.reload()?;
         Ok(())
     }
@@ -255,13 +251,7 @@ impl App {
         }
         let new_parent = tops[idx - 1];
 
-        let pos = self.store.next_position()?;
-        self.store.set_parent(id, Some(new_parent))?;
-        self.store.set_position(id, pos)?;
-        self.store.set_collapsed(new_parent, false)?;
-        if !done {
-            self.store.set_done(new_parent, false)?;
-        }
+        self.store.indent(id, new_parent, !done)?;
         self.reload()?;
         self.select_id_or_first(Some(id));
         self.status = "하위로 넣음".to_string();
@@ -287,11 +277,7 @@ impl App {
         let at = order.iter().position(|&x| x == pid).unwrap();
         order.insert(at + 1, id);
 
-        self.store.set_parent(id, None)?;
-        for (i, tid) in order.iter().enumerate() {
-            self.store.set_position(*tid, i as i64 + 1)?;
-        }
-
+        self.store.outdent(id, &order)?;
         self.reload()?;
         self.select_id_or_first(Some(id));
         self.status = "최상위로 뺌".to_string();
@@ -379,9 +365,7 @@ impl App {
         if text.is_empty() {
             return Err(Error::Invalid("내용을 입력하세요".to_string()));
         }
-        let id = self.store.add(text, None, Some(parent_id))?;
-        self.store.set_done(parent_id, false)?;
-        self.store.set_collapsed(parent_id, false)?;
+        let id = self.store.add_subtask(text, parent_id)?;
         self.reload()?;
         self.select_id_or_first(Some(id));
         self.status = "하위 목표 추가됨".to_string();
