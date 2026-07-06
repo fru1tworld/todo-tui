@@ -1,6 +1,7 @@
 mod action;
 mod app;
 mod db;
+mod error;
 mod ui;
 
 use ratatui::{
@@ -21,7 +22,7 @@ use app::App;
 use db::Store;
 use ui::ui;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let store = Store::open_default()?;
     let mut app = App::new(store)?;
 
@@ -46,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui(f, app))?;
 

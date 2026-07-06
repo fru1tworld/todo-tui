@@ -3,6 +3,7 @@ use tui_input::Input;
 
 use crate::action::{Action, Flow};
 use crate::db::{Store, Todo, parse_due};
+use crate::error::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Mode {
@@ -44,7 +45,7 @@ pub(crate) struct App {
 }
 
 impl App {
-    pub(crate) fn new(store: Store) -> rusqlite::Result<Self> {
+    pub(crate) fn new(store: Store) -> Result<Self> {
         let mut app = Self {
             store,
             todos: Vec::new(),
@@ -61,7 +62,7 @@ impl App {
         Ok(app)
     }
 
-    pub(crate) fn apply(&mut self, action: Action) -> rusqlite::Result<Flow> {
+    pub(crate) fn apply(&mut self, action: Action) -> Result<Flow> {
         match action {
             Action::Quit => return Ok(Flow::Quit),
             Action::EnterInsert => self.mode = Mode::Insert,
@@ -103,7 +104,7 @@ impl App {
         (done, total)
     }
 
-    fn reload(&mut self) -> rusqlite::Result<()> {
+    fn reload(&mut self) -> Result<()> {
         let prev = self.selected_id();
         self.todos = self.store.list()?;
         self.rebuild_visible();
@@ -152,7 +153,7 @@ impl App {
             .select(Some((cur + delta).rem_euclid(len) as usize));
     }
 
-    fn move_selected(&mut self, delta: isize) -> rusqlite::Result<()> {
+    fn move_selected(&mut self, delta: isize) -> Result<()> {
         let Some(cur) = self.selected() else {
             return Ok(());
         };
@@ -184,7 +185,7 @@ impl App {
         Ok(())
     }
 
-    fn toggle_done(&mut self) -> rusqlite::Result<()> {
+    fn toggle_done(&mut self) -> Result<()> {
         let Some(t) = self.selected() else {
             return Ok(());
         };
@@ -215,7 +216,7 @@ impl App {
         Ok(())
     }
 
-    fn set_collapse(&mut self, collapsed: bool) -> rusqlite::Result<()> {
+    fn set_collapse(&mut self, collapsed: bool) -> Result<()> {
         let Some(t) = self.selected() else {
             return Ok(());
         };
@@ -228,7 +229,7 @@ impl App {
         self.reload()
     }
 
-    fn indent_selected(&mut self) -> rusqlite::Result<()> {
+    fn indent_selected(&mut self) -> Result<()> {
         let Some(t) = self.selected() else {
             return Ok(());
         };
@@ -267,7 +268,7 @@ impl App {
         Ok(())
     }
 
-    fn outdent_selected(&mut self) -> rusqlite::Result<()> {
+    fn outdent_selected(&mut self) -> Result<()> {
         let Some(t) = self.selected() else {
             return Ok(());
         };
@@ -297,7 +298,7 @@ impl App {
         Ok(())
     }
 
-    fn delete_selected(&mut self) -> rusqlite::Result<()> {
+    fn delete_selected(&mut self) -> Result<()> {
         if let Some(id) = self.selected_id() {
             self.store.delete(id)?;
             self.reload()?;
@@ -306,7 +307,7 @@ impl App {
         Ok(())
     }
 
-    fn commit_insert(&mut self) -> rusqlite::Result<()> {
+    fn commit_insert(&mut self) -> Result<()> {
         let text = self.input.value().trim().to_string();
         if !text.is_empty() {
             let id = self.store.add(&text, None, None)?;
@@ -352,32 +353,31 @@ impl App {
         self.popup = None;
     }
 
-    fn popup_commit(&mut self) -> rusqlite::Result<()> {
+    fn popup_commit(&mut self) -> Result<()> {
         let Some(popup) = self.popup.take() else {
             return Ok(());
         };
         let committed = match popup.kind {
-            PopupKind::Edit { id } => self.commit_edit(id, popup.input.value())?,
-            PopupKind::Due { id } => self.commit_due(id, popup.input.value())?,
-            PopupKind::Subtask { parent_id } => {
-                self.commit_subtask(parent_id, popup.input.value())?
-            }
+            PopupKind::Edit { id } => self.commit_edit(id, popup.input.value()),
+            PopupKind::Due { id } => self.commit_due(id, popup.input.value()),
+            PopupKind::Subtask { parent_id } => self.commit_subtask(parent_id, popup.input.value()),
         };
-        if let Err(msg) = committed {
-            self.status = msg;
-            self.popup = Some(popup);
+        match committed {
+            Ok(()) => Ok(()),
+            // 검증 실패는 상태 표시줄에 알리고 팝업을 유지한다.
+            Err(Error::Invalid(msg)) => {
+                self.status = msg;
+                self.popup = Some(popup);
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 
-    fn commit_subtask(
-        &mut self,
-        parent_id: i64,
-        text: &str,
-    ) -> rusqlite::Result<Result<(), String>> {
+    fn commit_subtask(&mut self, parent_id: i64, text: &str) -> Result<()> {
         let text = text.trim();
         if text.is_empty() {
-            return Ok(Err("내용을 입력하세요".to_string()));
+            return Err(Error::Invalid("내용을 입력하세요".to_string()));
         }
         let id = self.store.add(text, None, Some(parent_id))?;
         self.store.set_done(parent_id, false)?;
@@ -385,13 +385,13 @@ impl App {
         self.reload()?;
         self.select_id_or_first(Some(id));
         self.status = "하위 목표 추가됨".to_string();
-        Ok(Ok(()))
+        Ok(())
     }
 
-    fn commit_edit(&mut self, id: i64, text: &str) -> rusqlite::Result<Result<(), String>> {
+    fn commit_edit(&mut self, id: i64, text: &str) -> Result<()> {
         let text = text.trim();
         if text.is_empty() {
-            return Ok(Err("내용을 입력하세요".to_string()));
+            return Err(Error::Invalid("내용을 입력하세요".to_string()));
         }
         let due = self
             .todos
@@ -401,24 +401,20 @@ impl App {
         self.store.update(id, text, due)?;
         self.reload()?;
         self.status = "수정됨".to_string();
-        Ok(Ok(()))
+        Ok(())
     }
 
-    fn commit_due(&mut self, id: i64, input: &str) -> rusqlite::Result<Result<(), String>> {
-        match parse_due(input) {
-            Ok(value) => {
-                self.store.set_due(id, value)?;
-                self.reload()?;
-                self.status = if value.is_some() {
-                    "마감 설정됨"
-                } else {
-                    "마감 해제됨"
-                }
-                .to_string();
-                Ok(Ok(()))
-            }
-            Err(e) => Ok(Err(e)),
+    fn commit_due(&mut self, id: i64, input: &str) -> Result<()> {
+        let value = parse_due(input)?;
+        self.store.set_due(id, value)?;
+        self.reload()?;
+        self.status = if value.is_some() {
+            "마감 설정됨"
+        } else {
+            "마감 해제됨"
         }
+        .to_string();
+        Ok(())
     }
 }
 
@@ -459,7 +455,7 @@ mod tests {
         let mut app = app_with_todos(2);
         app.move_selection(1);
         let id = app.selected_id().unwrap();
-        app.commit_edit(id, "수정됨").unwrap().unwrap();
+        app.commit_edit(id, "수정됨").unwrap();
         let todos = app.store.list().unwrap();
         assert_eq!(todos[1].text, "수정됨");
     }
@@ -693,7 +689,7 @@ mod tests {
         app.select_id_or_first(Some(p));
         app.toggle_done().unwrap();
         assert!(app.todos.iter().find(|t| t.id == p).unwrap().done);
-        app.commit_subtask(p, "새 하위").unwrap().unwrap();
+        app.commit_subtask(p, "새 하위").unwrap();
         assert!(!app.todos.iter().find(|t| t.id == p).unwrap().done);
     }
 }

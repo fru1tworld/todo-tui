@@ -202,19 +202,21 @@ fn format_epoch(epoch: i64, fmt: &str) -> String {
     }
 }
 
-pub fn parse_due(input: &str) -> std::result::Result<Option<i64>, String> {
+pub fn parse_due(input: &str) -> crate::error::Result<Option<i64>> {
+    use crate::error::Error;
+
     let s = input.trim();
     if s.is_empty() {
         return Ok(None);
     }
     let date = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| "날짜 형식은 YYYY-MM-DD 여야 합니다".to_string())?;
+        .map_err(|_| Error::Invalid("날짜 형식은 YYYY-MM-DD 여야 합니다".to_string()))?;
     let naive = date
         .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| "잘못된 날짜".to_string())?;
+        .ok_or_else(|| Error::Invalid("잘못된 날짜".to_string()))?;
     match Local.from_local_datetime(&naive).single() {
         Some(dt) => Ok(Some(dt.timestamp())),
-        None => Err("변환할 수 없는 날짜".to_string()),
+        None => Err(Error::Invalid("변환할 수 없는 날짜".to_string())),
     }
 }
 
