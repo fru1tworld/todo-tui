@@ -19,6 +19,7 @@ const HELP_GROUPS: &[&[&str]] = &[
         "t 마감",
         "space 완료",
         "d 삭제",
+        "u 되돌리기",
     ],
     &[
         "↑↓ 이동",
@@ -27,6 +28,14 @@ const HELP_GROUPS: &[&[&str]] = &[
         "Shift+← 넣기",
         "Shift+→ 빼기",
         "Shift+↑↓ 순서",
+    ],
+    &[
+        "1-5 탭 전환",
+        "n 새 탭",
+        "x 탭 닫기",
+        "r 탭 이름",
+        "{} 탭 순서",
+        "Tab+←→ 탭으로 보내기",
         "q 종료",
     ],
 ];
@@ -89,11 +98,23 @@ fn title_bar(app: &App) -> Paragraph<'static> {
         Mode::Normal => "-- NORMAL --".blue().bold(),
     };
     let top_level = app.todos.iter().filter(|t| t.parent_id.is_none()).count();
-    Paragraph::new(Line::from(vec![
-        format!(" To-Do  ({top_level}개)  ").cyan().bold(),
-        tag,
-    ]))
-    .block(Block::default().borders(Borders::ALL))
+
+    let mut spans = vec![" To-Do ".cyan().bold()];
+    for (i, p) in app.projects.iter().enumerate() {
+        let name = format!(" {} {} ", i + 1, p.name);
+        spans.push(if p.id == app.project_id {
+            name.cyan().bold().reversed()
+        } else {
+            name.dim()
+        });
+        spans.push(Span::raw(" "));
+    }
+    spans.push(format!(" ({top_level}개)  ").dim());
+    if app.tab_held {
+        spans.push("⇥ ←→ 보내기  ".yellow().bold());
+    }
+    spans.push(tag);
+    Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL))
 }
 
 fn todo_list(app: &App, width: u16) -> List<'static> {
@@ -105,21 +126,16 @@ fn todo_list(app: &App, width: u16) -> List<'static> {
         .iter()
         .map(|&i| {
             let t = &app.todos[i];
-            match t.parent_id {
-                Some(pid) => {
-                    let is_last = app
-                        .todos
-                        .iter()
-                        .rfind(|c| c.parent_id == Some(pid))
-                        .map(|c| c.id)
-                        == Some(t.id);
-                    child_line(t, now, is_last, inner)
-                }
-                None => {
-                    let (done, total) = app.children_done(t.id);
-                    parent_line(t, now, done, total, inner)
-                }
-            }
+            let depth = app.depth_of(t.id);
+            let (done, total) = app.children_done(t.id);
+            let is_last = t.parent_id.is_some_and(|pid| {
+                app.todos
+                    .iter()
+                    .rfind(|c| c.parent_id == Some(pid))
+                    .map(|c| c.id)
+                    == Some(t.id)
+            });
+            todo_line(t, now, depth, is_last, done, total, inner)
         })
         .collect();
 
@@ -188,9 +204,12 @@ fn wrap_commands(groups: &[&[&str]], width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn parent_line(
+/// 깊이에 따라 들여쓰고, 자식이 있으면 접힘 캐럿과 (완료/전체) 배지를 붙인다.
+fn todo_line(
     t: &Todo,
     now: i64,
+    depth: usize,
+    is_last: bool,
     done_children: usize,
     total_children: usize,
     width: usize,
@@ -198,10 +217,14 @@ fn parent_line(
     let has_children = total_children > 0;
     let mut prefix = Vec::new();
 
+    if depth > 0 {
+        let branch = if is_last { "└ " } else { "├ " };
+        prefix.push(format!("{}{branch}", "    ".repeat(depth)).dim());
+    }
     if has_children {
         let caret = if t.collapsed { "▸ " } else { "▾ " };
         prefix.push(caret.dim());
-    } else {
+    } else if depth == 0 {
         prefix.push(Span::raw("  "));
     }
 
@@ -220,19 +243,6 @@ fn parent_line(
     }
     push_due(&mut suffix, t, now);
 
-    wrapped_item(prefix, &t.text, content_style(t.done), suffix, width)
-}
-
-fn child_line(t: &Todo, now: i64, is_last: bool, width: usize) -> ListItem<'static> {
-    let branch = if is_last { "    └ " } else { "    ├ " };
-    let prefix = vec![
-        branch.dim(),
-        checkbox(t.done),
-        timestamp_badge(t.created_at_string()),
-        Span::raw(" "),
-    ];
-    let mut suffix = Vec::new();
-    push_due(&mut suffix, t, now);
     wrapped_item(prefix, &t.text, content_style(t.done), suffix, width)
 }
 
@@ -396,7 +406,7 @@ mod tests {
     #[test]
     fn help_wraps_by_command_and_group() {
         let wide = wrap_commands(HELP_GROUPS, 200);
-        assert_eq!(wide.len(), 2);
+        assert_eq!(wide.len(), HELP_GROUPS.len());
 
         let narrow = wrap_commands(HELP_GROUPS, 12);
         for cmd in HELP_GROUPS.iter().flat_map(|g| g.iter()) {

@@ -9,8 +9,8 @@ use ratatui::{
     crossterm::{
         cursor::SetCursorStyle,
         event::{
-            self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-            PushKeyboardEnhancementFlags,
+            self, Event, KeyCode, KeyEventKind, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
         },
         execute,
         terminal::supports_keyboard_enhancement,
@@ -54,8 +54,18 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
         let Event::Key(key) = event::read()? else {
             continue;
         };
-        if key.kind != KeyEventKind::Press {
+        if key.kind == KeyEventKind::Release {
             continue;
+        }
+        // Tab을 누르면 '보내기 모드': ←→ 가 메모를 옆 탭으로 옮기고,
+        // 그 외 키를 누르면 즉시 해제된다(Tab 뗌은 터미널이 보고하지 않음).
+        if key.code == KeyCode::Tab {
+            app.tab_held = true;
+            app.status = "←→ 메모를 옆 탭으로 보내기 · 다른 키를 누르면 해제".to_string();
+            continue;
+        }
+        if app.tab_held && !matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            app.tab_held = false;
         }
         if let Some(action) = map_key(app, key)
             && let Flow::Quit = app.apply(action)?

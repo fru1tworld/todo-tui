@@ -17,9 +17,16 @@ pub(crate) enum Action {
     Collapse(bool),
     ToggleDone,
     Delete,
+    Undo,
+    ProjectSelect(usize),
+    MoveProject(isize),
+    MoveToProject(isize),
     OpenEdit,
     OpenDue,
     OpenSubtask,
+    OpenNewProject,
+    OpenRenameProject,
+    DeleteProject,
     PopupInput(InputRequest),
     PopupCommit,
     PopupCancel,
@@ -59,6 +66,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
     use Action::*;
     use KeyCode::{Char, Down, Enter, Esc, Left, Right, Up};
 
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     if app.popup.is_some() {
@@ -69,10 +77,21 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         };
     }
 
+    // Tab을 누른 채 ←→: 선택한 메모를 옆 탭으로 보낸다. 탭 전환은 숫자 1~5.
+    if app.tab_held {
+        return match key.code {
+            Left => Some(MoveToProject(-1)),
+            Right => Some(MoveToProject(1)),
+            _ => None,
+        };
+    }
+
     // 입력 중(내용이 있을 때)에는 ←→ 를 커서 이동에 양보한다.
     let editing = app.mode == Mode::Insert && !app.input.value().is_empty();
 
     let nav = match key.code {
+        Left if ctrl && shift => Some(MoveToProject(-1)),
+        Right if ctrl && shift => Some(MoveToProject(1)),
         Up if shift => Some(Reorder(-1)),
         Down if shift => Some(Reorder(1)),
         Left if shift && !editing => Some(Indent),
@@ -100,6 +119,15 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
             Char('t') => OpenDue,
             Char('s') => OpenSubtask,
             Char('d') => Delete,
+            Char('u') => Undo,
+            Char('n') => OpenNewProject,
+            Char('r') => OpenRenameProject,
+            Char('x') => DeleteProject,
+            Char('<' | ',') => MoveToProject(-1),
+            Char('>' | '.') => MoveToProject(1),
+            Char('{' | '[') => MoveProject(-1),
+            Char('}' | ']') => MoveProject(1),
+            Char(c @ '1'..='5') => ProjectSelect(c as usize - '1' as usize),
             Char(' ') => ToggleDone,
             Char('j') => Select(1),
             Char('k') => Select(-1),
