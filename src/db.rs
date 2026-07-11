@@ -45,10 +45,10 @@ fn todo_from_row(row: &rusqlite::Row) -> Result<Todo> {
         text: row.get(1)?,
         created_at: row.get(2)?,
         due_at: row.get(3)?,
-        done: row.get::<_, i64>(4)? != 0,
+        done: row.get(4)?,
         position: row.get(5)?,
         parent_id: row.get(6)?,
-        collapsed: row.get::<_, i64>(7)? != 0,
+        collapsed: row.get(7)?,
         project_id: row.get(8)?,
     })
 }
@@ -201,10 +201,10 @@ impl Store {
                     &t.text,
                     t.created_at,
                     t.due_at,
-                    t.done as i64,
+                    t.done,
                     t.position,
                     t.parent_id,
-                    t.collapsed as i64,
+                    t.collapsed,
                     t.project_id,
                 ))?;
             }
@@ -256,7 +256,7 @@ impl Store {
         {
             let mut stmt = tx.prepare("UPDATE todos SET done = ?1 WHERE id = ?2")?;
             for &(id, done) in updates {
-                stmt.execute((done as i64, id))?;
+                stmt.execute((done, id))?;
             }
         }
         tx.commit()
@@ -332,7 +332,7 @@ impl Store {
     pub fn set_collapsed(&self, id: i64, collapsed: bool) -> Result<()> {
         self.conn.execute(
             "UPDATE todos SET collapsed = ?1 WHERE id = ?2",
-            (collapsed as i64, id),
+            (collapsed, id),
         )?;
         Ok(())
     }
@@ -385,24 +385,28 @@ fn migrate_v1(conn: &Connection) -> Result<()> {
     if has_table {
         // 레거시 스키마에 없는 컬럼을 먼저 채워 아래 복사 SELECT 목록을 통일한다.
         let existing = column_names(conn)?;
-        if !existing.iter().any(|c| c == "due_at") {
-            conn.execute("ALTER TABLE todos ADD COLUMN due_at INTEGER", [])?;
-        }
-        if !existing.iter().any(|c| c == "position") {
-            conn.execute(
+        let added = [
+            ("due_at", "ALTER TABLE todos ADD COLUMN due_at INTEGER"),
+            (
+                "position",
                 "ALTER TABLE todos ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-            conn.execute("UPDATE todos SET position = id", [])?;
-        }
-        if !existing.iter().any(|c| c == "parent_id") {
-            conn.execute("ALTER TABLE todos ADD COLUMN parent_id INTEGER", [])?;
-        }
-        if !existing.iter().any(|c| c == "collapsed") {
-            conn.execute(
+            ),
+            (
+                "parent_id",
+                "ALTER TABLE todos ADD COLUMN parent_id INTEGER",
+            ),
+            (
+                "collapsed",
                 "ALTER TABLE todos ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
+            ),
+        ];
+        for (col, ddl) in added {
+            if !existing.iter().any(|c| c == col) {
+                conn.execute(ddl, [])?;
+                if col == "position" {
+                    conn.execute("UPDATE todos SET position = id", [])?;
+                }
+            }
         }
     }
 
@@ -466,10 +470,10 @@ fn column_names(conn: &Connection) -> Result<Vec<String>> {
 }
 
 fn format_epoch(epoch: i64, fmt: &str) -> String {
-    match DateTime::from_timestamp(epoch, 0) {
-        Some(dt) => dt.with_timezone(&Local).format(fmt).to_string(),
-        None => "?".to_string(),
-    }
+    DateTime::from_timestamp(epoch, 0).map_or_else(
+        || "?".to_string(),
+        |dt| dt.with_timezone(&Local).format(fmt).to_string(),
+    )
 }
 
 pub fn parse_due(input: &str) -> crate::error::Result<Option<i64>> {
@@ -484,17 +488,18 @@ pub fn parse_due(input: &str) -> crate::error::Result<Option<i64>> {
     let naive = date
         .and_hms_opt(0, 0, 0)
         .ok_or_else(|| Error::Invalid("잘못된 날짜".to_string()))?;
-    match Local.from_local_datetime(&naive).single() {
-        Some(dt) => Ok(Some(dt.timestamp())),
-        None => Err(Error::Invalid("변환할 수 없는 날짜".to_string())),
-    }
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| Some(dt.timestamp()))
+        .ok_or_else(|| Error::Invalid("변환할 수 없는 날짜".to_string()))
 }
 
 fn default_db_path() -> PathBuf {
-    let mut dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    dir.push("todo-tui");
-    dir.push("todos.db");
-    dir
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("todo-tui")
+        .join("todos.db")
 }
 
 #[cfg(test)]

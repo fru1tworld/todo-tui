@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use ratatui::widgets::ListState;
 use tui_input::Input;
 
@@ -63,7 +65,7 @@ pub(crate) struct App {
     pub(crate) status: String,
     /// Tab 키가 눌려 있는 동안 true. 화살표를 '탭으로 보내기'로 바꾼다(kitty 프로토콜 필요).
     pub(crate) tab_held: bool,
-    undo_stack: std::collections::VecDeque<Snapshot>,
+    undo_stack: VecDeque<Snapshot>,
 }
 
 /// order 안에서 id를 delta만큼 옮긴 새 순서. 끝에서는 반대편으로 감긴다.
@@ -93,7 +95,7 @@ impl App {
             popup: None,
             status: String::new(),
             tab_held: false,
-            undo_stack: std::collections::VecDeque::new(),
+            undo_stack: VecDeque::new(),
         };
         app.reload()?;
         Ok(app)

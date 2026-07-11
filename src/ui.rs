@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Position, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Clear, List, ListItem, Paragraph},
 };
 use tui_input::Input;
 
@@ -114,7 +114,7 @@ fn title_bar(app: &App) -> Paragraph<'static> {
         spans.push("⇥ ←→ 보내기  ".yellow().bold());
     }
     spans.push(tag);
-    Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL))
+    Paragraph::new(Line::from(spans)).block(Block::bordered())
 }
 
 fn todo_list(app: &App, width: u16) -> List<'static> {
@@ -132,19 +132,14 @@ fn todo_list(app: &App, width: u16) -> List<'static> {
                 app.todos
                     .iter()
                     .rfind(|c| c.parent_id == Some(pid))
-                    .map(|c| c.id)
-                    == Some(t.id)
+                    .is_some_and(|c| c.id == t.id)
             });
             todo_line(t, now, depth, is_last, done, total, inner)
         })
         .collect();
 
     List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" 목록  [ ] 시각 내용 "),
-        )
+        .block(Block::bordered().title(" 목록  [ ] 시각 내용 "))
         .highlight_style(Style::new().reversed().bold())
         .highlight_symbol("▶ ")
 }
@@ -163,7 +158,7 @@ fn bottom_panel(app: &App, inner_width: u16) -> Paragraph<'static> {
             }
             Paragraph::new(lines)
                 .dim()
-                .block(Block::default().borders(Borders::ALL).title(" 안내 "))
+                .block(Block::bordered().title(" 안내 "))
         }
     }
 }
@@ -342,8 +337,7 @@ fn input_box(label: &str, input: &Input, box_width: u16) -> Paragraph<'static> {
     Paragraph::new(input.value().to_string())
         .scroll((0, scroll as u16))
         .block(
-            Block::default()
-                .borders(Borders::ALL)
+            Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().yellow())
                 .title(format!(" {label} ")),
