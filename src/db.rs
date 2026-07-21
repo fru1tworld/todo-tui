@@ -62,8 +62,7 @@ pub struct Store {
 
 impl Store {
     pub fn data_version(&self) -> Result<i64> {
-        self.conn
-            .query_row("PRAGMA data_version", [], |r| r.get(0))
+        self.conn.query_row("PRAGMA data_version", [], |r| r.get(0))
     }
 
     pub fn open_default() -> Result<Self> {
@@ -484,7 +483,10 @@ fn format_epoch(epoch: i64, fmt: &str) -> String {
     )
 }
 
-fn serialize_due<S: serde::Serializer>(due: &Option<i64>, s: S) -> std::result::Result<S::Ok, S::Error> {
+fn serialize_due<S: serde::Serializer>(
+    due: &Option<i64>,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
     match due.map(|e| format_epoch(e, "%Y-%m-%d")) {
         Some(d) => s.serialize_some(&d),
         None => s.serialize_none(),
