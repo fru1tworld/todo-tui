@@ -1,9 +1,11 @@
 mod action;
 mod app;
+mod cli;
 mod db;
 mod error;
 mod ui;
 
+use clap::Parser;
 use ratatui::{
     DefaultTerminal,
     crossterm::{
@@ -19,10 +21,17 @@ use ratatui::{
 
 use action::{Flow, map_key};
 use app::App;
+use cli::Cli;
 use db::Store;
 use ui::ui;
 
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    if let Some(cmd) = cli.command {
+        return cli::run(cmd);
+    }
+
     let store = Store::open_default()?;
     let mut app = App::new(store)?;
 
@@ -48,8 +57,17 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let poll_interval = Duration::from_secs(1);
+
     loop {
         terminal.draw(|f| ui(f, app))?;
+
+        if !event::poll(poll_interval)? {
+            app.sync()?;
+            continue;
+        }
 
         let Event::Key(key) = event::read()? else {
             continue;
@@ -57,8 +75,6 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
         if key.kind == KeyEventKind::Release {
             continue;
         }
-        // Tab을 누르면 '보내기 모드': ←→ 가 메모를 옆 탭으로 옮기고,
-        // 그 외 키를 누르면 즉시 해제된다(Tab 뗌은 터미널이 보고하지 않음).
         if key.code == KeyCode::Tab {
             app.tab_held = true;
             app.status = "←→ 메모를 옆 탭으로 보내기 · 다른 키를 누르면 해제".to_string();

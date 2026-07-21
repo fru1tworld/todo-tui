@@ -66,6 +66,7 @@ pub(crate) struct App {
     /// Tab 키가 눌려 있는 동안 true. 화살표를 '탭으로 보내기'로 바꾼다(kitty 프로토콜 필요).
     pub(crate) tab_held: bool,
     undo_stack: VecDeque<Snapshot>,
+    data_version: i64,
 }
 
 /// order 안에서 id를 delta만큼 옮긴 새 순서. 끝에서는 반대편으로 감긴다.
@@ -96,9 +97,18 @@ impl App {
             status: String::new(),
             tab_held: false,
             undo_stack: VecDeque::new(),
+            data_version: 0,
         };
         app.reload()?;
         Ok(app)
+    }
+
+    pub(crate) fn sync(&mut self) -> Result<()> {
+        let v = self.store.data_version()?;
+        if v != self.data_version {
+            self.reload()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn apply(&mut self, action: Action) -> Result<Flow> {
@@ -197,7 +207,7 @@ impl App {
 
     fn undo(&mut self) -> Result<()> {
         let Some(snap) = self.undo_stack.pop_back() else {
-            self.status = "되돌릴 작업이 없어요".to_string();
+            self.status = "되돌릴 작업이 없어요".into();
             return Ok(());
         };
         self.store.replace_all(&snap.projects, &snap.todos)?;
@@ -217,6 +227,7 @@ impl App {
         }
         let prev = self.selected_id();
         self.todos = self.store.list(self.project_id)?;
+        self.data_version = self.store.data_version()?;
         self.rebuild_visible();
         self.select_id_or_keep(prev);
         Ok(())
@@ -288,7 +299,7 @@ impl App {
         self.push_undo()?;
         self.store.set_positions(&order)?;
         self.reload()?;
-        self.status = "순서 이동됨".to_string();
+        self.status = "순서 이동됨".into();
         Ok(())
     }
 
@@ -339,7 +350,7 @@ impl App {
             .collect();
         let idx = siblings.iter().position(|&x| x == id).unwrap();
         if idx == 0 {
-            self.status = "위에 넣을 형제 항목이 없어요".to_string();
+            self.status = "위에 넣을 형제 항목이 없어요".into();
             return Ok(());
         }
         // 넣은 뒤 가장 깊은 노드가 depth(0-based) MAX_DEPTH-1을 넘으면 안 된다.
@@ -353,7 +364,7 @@ impl App {
         self.store.indent(id, new_parent, !done)?;
         self.reload()?;
         self.select_id_or_keep(Some(id));
-        self.status = "하위로 넣음".to_string();
+        self.status = "하위로 넣음".into();
         Ok(())
     }
 
@@ -362,7 +373,7 @@ impl App {
             return Ok(());
         };
         let Some(pid) = t.parent_id else {
-            self.status = "이미 최상위 항목이에요".to_string();
+            self.status = "이미 최상위 항목이에요".into();
             return Ok(());
         };
         let id = t.id;
@@ -382,7 +393,7 @@ impl App {
         self.store.outdent(id, grandparent, &order)?;
         self.reload()?;
         self.select_id_or_keep(Some(id));
-        self.status = "한 단계 위로 뺌".to_string();
+        self.status = "한 단계 위로 뺌".into();
         Ok(())
     }
 
@@ -391,7 +402,7 @@ impl App {
             self.push_undo()?;
             self.store.delete(id)?;
             self.reload()?;
-            self.status = "삭제됨 (u 되돌리기)".to_string();
+            self.status = "삭제됨 (u 되돌리기)".into();
         }
         Ok(())
     }
@@ -403,7 +414,7 @@ impl App {
             let id = self.store.add(&text, None, None, self.project_id)?;
             self.reload()?;
             self.select_id_or_keep(Some(id));
-            self.status = "추가됨".to_string();
+            self.status = "추가됨".into();
         }
         self.input.reset();
         Ok(())
@@ -441,23 +452,21 @@ impl App {
     fn move_project(&mut self, delta: isize) -> Result<()> {
         let ids: Vec<i64> = self.projects.iter().map(|p| p.id).collect();
         let Some(order) = rotate(&ids, self.project_id, delta) else {
-            self.status = "프로젝트가 하나뿐이에요".to_string();
+            self.status = "프로젝트가 하나뿐이에요".into();
             return Ok(());
         };
 
         self.push_undo()?;
         self.store.set_project_positions(&order)?;
         self.reload()?;
-        self.status = "탭 순서 이동됨".to_string();
+        self.status = "탭 순서 이동됨".into();
         Ok(())
     }
 
     /// 선택한 항목(하위 포함)을 옆 프로젝트의 최상위로 보낸다.
     fn move_to_project(&mut self, delta: isize) -> Result<()> {
-        let Some((target_id, target_name)) =
-            self.neighbor_project(delta).map(|p| (p.id, p.name.clone()))
-        else {
-            self.status = "보낼 다른 프로젝트가 없어요".to_string();
+        let Some(target) = self.neighbor_project(delta).map(|p| (p.id, p.name.clone())) else {
+            self.status = "보낼 다른 프로젝트가 없어요".into();
             return Ok(());
         };
         let Some(id) = self.selected_id() else {
@@ -466,15 +475,15 @@ impl App {
         let subtree: Vec<i64> = std::iter::once(id).chain(self.descendant_ids(id)).collect();
 
         self.push_undo()?;
-        self.store.move_to_project(id, &subtree, target_id)?;
+        self.store.move_to_project(id, &subtree, target.0)?;
         self.reload()?;
-        self.status = format!("'{target_name}' 프로젝트로 보냄 (u 되돌리기)");
+        self.status = format!("'{}' 프로젝트로 보냄 (u 되돌리기)", target.1);
         Ok(())
     }
 
     fn delete_project(&mut self) -> Result<()> {
         if self.projects.len() <= 1 {
-            self.status = "마지막 프로젝트는 삭제할 수 없어요".to_string();
+            self.status = "마지막 프로젝트는 삭제할 수 없어요".into();
             return Ok(());
         }
         let name = self.projects[self.project_index()].name.clone();
@@ -486,7 +495,7 @@ impl App {
     }
 
     fn open_popup(&mut self, kind: PopupKind, input: String) {
-        self.status = "Enter 저장  Esc 취소".to_string();
+        self.status = "Enter 저장  Esc 취소".into();
         self.popup = Some(Popup {
             kind,
             input: Input::new(input),
@@ -538,7 +547,7 @@ impl App {
     }
 
     fn popup_cancel(&mut self) {
-        self.status = "취소됨".to_string();
+        self.status = "취소됨".into();
         self.popup = None;
     }
 
@@ -568,26 +577,26 @@ impl App {
     fn commit_subtask(&mut self, parent_id: i64, text: &str) -> Result<()> {
         let text = text.trim();
         if text.is_empty() {
-            return Err(Error::Invalid("내용을 입력하세요".to_string()));
+            return Err(Error::Invalid("내용을 입력하세요".into()));
         }
         self.push_undo()?;
         let id = self.store.add_subtask(text, parent_id)?;
         self.reload()?;
         self.select_id_or_keep(Some(id));
-        self.status = "하위 목표 추가됨".to_string();
+        self.status = "하위 목표 추가됨".into();
         Ok(())
     }
 
     fn commit_edit(&mut self, id: i64, text: &str) -> Result<()> {
         let text = text.trim();
         if text.is_empty() {
-            return Err(Error::Invalid("내용을 입력하세요".to_string()));
+            return Err(Error::Invalid("내용을 입력하세요".into()));
         }
         let due = self.find(id).and_then(|t| t.due_at);
         self.push_undo()?;
         self.store.update(id, text, due)?;
         self.reload()?;
-        self.status = "수정됨".to_string();
+        self.status = "수정됨".into();
         Ok(())
     }
 
@@ -608,7 +617,7 @@ impl App {
     fn commit_new_project(&mut self, name: &str) -> Result<()> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(Error::Invalid("이름을 입력하세요".to_string()));
+            return Err(Error::Invalid("이름을 입력하세요".into()));
         }
         if self.projects.len() >= PROJECT_LIMIT {
             return Err(Error::Invalid(format!(
@@ -627,12 +636,12 @@ impl App {
     fn commit_rename_project(&mut self, id: i64, name: &str) -> Result<()> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(Error::Invalid("이름을 입력하세요".to_string()));
+            return Err(Error::Invalid("이름을 입력하세요".into()));
         }
         self.push_undo()?;
         self.store.rename_project(id, name)?;
         self.reload()?;
-        self.status = "프로젝트 이름 변경됨".to_string();
+        self.status = "프로젝트 이름 변경됨".into();
         Ok(())
     }
 }

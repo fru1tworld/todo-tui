@@ -1,22 +1,25 @@
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, Result};
+use serde::Serialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Project {
     pub id: i64,
     pub name: String,
     pub position: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Todo {
     pub id: i64,
     pub text: String,
     pub created_at: i64,
+    #[serde(serialize_with = "serialize_due")]
     pub due_at: Option<i64>,
     pub done: bool,
     pub parent_id: Option<i64>,
+    #[serde(skip)]
     pub collapsed: bool,
     pub position: i64,
     pub project_id: i64,
@@ -58,6 +61,11 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn data_version(&self) -> Result<i64> {
+        self.conn
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+    }
+
     pub fn open_default() -> Result<Self> {
         let path = default_db_path();
         if let Some(parent) = path.parent() {
@@ -476,6 +484,13 @@ fn format_epoch(epoch: i64, fmt: &str) -> String {
     )
 }
 
+fn serialize_due<S: serde::Serializer>(due: &Option<i64>, s: S) -> std::result::Result<S::Ok, S::Error> {
+    match due.map(|e| format_epoch(e, "%Y-%m-%d")) {
+        Some(d) => s.serialize_some(&d),
+        None => s.serialize_none(),
+    }
+}
+
 pub fn parse_due(input: &str) -> crate::error::Result<Option<i64>> {
     use crate::error::Error;
 
@@ -484,15 +499,15 @@ pub fn parse_due(input: &str) -> crate::error::Result<Option<i64>> {
         return Ok(None);
     }
     let date = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| Error::Invalid("날짜 형식은 YYYY-MM-DD 여야 합니다".to_string()))?;
+        .map_err(|_| Error::Invalid("날짜 형식은 YYYY-MM-DD 여야 합니다".into()))?;
     let naive = date
         .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| Error::Invalid("잘못된 날짜".to_string()))?;
+        .ok_or_else(|| Error::Invalid("잘못된 날짜".into()))?;
     Local
         .from_local_datetime(&naive)
         .single()
         .map(|dt| Some(dt.timestamp()))
-        .ok_or_else(|| Error::Invalid("변환할 수 없는 날짜".to_string()))
+        .ok_or_else(|| Error::Invalid("변환할 수 없는 날짜".into()))
 }
 
 fn default_db_path() -> PathBuf {
