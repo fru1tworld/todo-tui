@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
-use crate::db::{Store, parse_due};
+use crate::app::MAX_DEPTH;
+use crate::db::{Store, Todo, parse_due};
 
 #[derive(Parser)]
 #[command(name = "todo-tui", about = "TUI 할 일 관리 + CLI")]
@@ -91,7 +92,7 @@ pub(crate) fn run(cmd: Command) -> anyhow::Result<()> {
             } else {
                 for t in &todos {
                     let check = if t.done { "x" } else { " " };
-                    let indent = if t.parent_id.is_some() { "  " } else { "" };
+                    let indent = "  ".repeat(depth_of(&todos, t));
                     let due = t
                         .due_string()
                         .map(|d| format!(" (마감: {d})"))
@@ -110,10 +111,14 @@ pub(crate) fn run(cmd: Command) -> anyhow::Result<()> {
                 Some(name) => resolve_project(&store, &name)?,
                 None => store.list_projects()?[0].id,
             };
+            if let Some(parent_id) = parent {
+                ensure_depth(&store, parent_id)?;
+            }
             let due_at = due.map(|d| parse_due(&d)).transpose()?.flatten();
             println!("{}", store.add(&text, due_at, parent, pid)?);
         }
         Command::Subtask { parent_id, text } => {
+            ensure_depth(&store, parent_id)?;
             println!("{}", store.add_subtask(&text, parent_id)?);
         }
         Command::Done { id } => store.set_done_many(&[(id, true)])?,
@@ -135,6 +140,29 @@ pub(crate) fn run(cmd: Command) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 부모 아래에 항목을 하나 더 넣어도 최대 깊이를 넘지 않는지 확인한다.
+fn ensure_depth(store: &Store, parent_id: i64) -> anyhow::Result<()> {
+    let todos = store.list_all()?;
+    let parent = todos
+        .iter()
+        .find(|t| t.id == parent_id)
+        .ok_or_else(|| anyhow::anyhow!("#{parent_id} 할 일을 찾을 수 없습니다"))?;
+    if depth_of(&todos, parent) + 1 >= MAX_DEPTH {
+        anyhow::bail!("하위 목표는 {MAX_DEPTH}단계까지만 넣을 수 있습니다");
+    }
+    Ok(())
+}
+
+/// 목록 안에서의 깊이(최상위 = 0). 부모를 따라 올라가며 센다.
+fn depth_of(todos: &[Todo], todo: &Todo) -> usize {
+    std::iter::successors(Some(todo), |t| {
+        t.parent_id
+            .and_then(|pid| todos.iter().find(|p| p.id == pid))
+    })
+    .count()
+        - 1
 }
 
 fn resolve_project(store: &Store, name: &str) -> anyhow::Result<i64> {

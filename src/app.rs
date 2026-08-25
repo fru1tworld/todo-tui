@@ -4,6 +4,7 @@ use ratatui::widgets::ListState;
 use tui_input::Input;
 
 use crate::action::{Action, Flow};
+use crate::clipboard;
 use crate::db::{Project, Store, Todo, parse_due};
 use crate::error::{Error, Result};
 
@@ -12,7 +13,7 @@ const UNDO_LIMIT: usize = 5;
 /// 프로젝트(탭) 최대 개수.
 pub(crate) const PROJECT_LIMIT: usize = 5;
 /// 트리 최대 깊이(0-based 최심 depth = MAX_DEPTH - 1).
-const MAX_DEPTH: usize = 3;
+pub(crate) const MAX_DEPTH: usize = 3;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Mode {
@@ -128,6 +129,7 @@ impl App {
             Action::ToggleDone => self.toggle_done()?,
             Action::Delete => self.delete_selected()?,
             Action::Undo => self.undo()?,
+            Action::Yank => self.yank_selected(),
             Action::ProjectSelect(idx) => self.select_project(idx)?,
             Action::MoveProject(delta) => self.move_project(delta)?,
             Action::MoveToProject(delta) => self.move_to_project(delta)?,
@@ -405,6 +407,44 @@ impl App {
             self.status = "삭제됨 (u 되돌리기)".into();
         }
         Ok(())
+    }
+
+    /// 선택 항목과 하위 목표들을 마크다운 체크리스트로 시스템 클립보드에 복사한다.
+    fn yank_selected(&mut self) {
+        let Some(id) = self.selected_id() else {
+            self.status = "복사할 항목이 없어요".into();
+            return;
+        };
+        let text = self.yank_text(id);
+        let count = 1 + self.descendant_ids(id).len();
+        self.status = match clipboard::copy(&text) {
+            Ok(()) => format!("복사됨 ({count}줄)"),
+            Err(msg) => msg,
+        };
+    }
+
+    /// 항목과 하위 목표들을 마크다운 체크리스트 여러 줄로 만든다.
+    fn yank_text(&self, id: i64) -> String {
+        let base = self.depth_of(id);
+        std::iter::once(id)
+            .chain(self.descendant_ids(id))
+            .filter_map(|i| self.find(i))
+            .map(|t| self.yank_line(t, base))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 클립보드용 한 줄: `- [ ] 내용 (마감: YYYY-MM-DD)`, 깊이만큼 들여쓴다.
+    /// 내용에 줄바꿈이 들어 있어도 체크리스트가 깨지지 않게 공백으로 눕힌다.
+    fn yank_line(&self, todo: &Todo, base_depth: usize) -> String {
+        let indent = "  ".repeat(self.depth_of(todo.id).saturating_sub(base_depth));
+        let check = if todo.done { "x" } else { " " };
+        let text = todo.text.replace(['\n', '\r'], " ");
+        let due = todo
+            .due_string()
+            .map(|d| format!(" (마감: {d})"))
+            .unwrap_or_default();
+        format!("{indent}- [{check}] {text}{due}")
     }
 
     fn commit_insert(&mut self) -> Result<()> {
@@ -983,6 +1023,40 @@ mod tests {
         assert!(app.find(p).unwrap().done);
         app.commit_subtask(p, "새 하위").unwrap();
         assert!(!app.find(p).unwrap().done);
+    }
+
+    #[test]
+    fn yank_text_includes_subtree_as_checklist() {
+        let mut app = app_with_subtasks();
+        let parent = app.todos[0].id;
+        let child_a = app.todos[1].id;
+        // 완료 항목은 형제 아래로 가라앉으므로 순서도 화면과 같다.
+        app.store.set_done_many(&[(child_a, true)]).unwrap();
+        app.store
+            .update(parent, "todo 0", parse_due("2026-07-01").unwrap())
+            .unwrap();
+        app.reload().unwrap();
+
+        assert_eq!(
+            app.yank_text(parent),
+            "- [ ] todo 0 (마감: 2026-07-01)\n  - [ ] child B\n  - [x] child A"
+        );
+    }
+
+    #[test]
+    fn yank_text_of_child_starts_at_zero_indent() {
+        let app = app_with_subtasks();
+        let child_a = app.todos[1].id;
+        assert_eq!(app.yank_text(child_a), "- [ ] child A");
+    }
+
+    #[test]
+    fn yank_line_flattens_newlines_in_text() {
+        let mut app = app_with_todos(1);
+        let id = app.todos[0].id;
+        app.store.update(id, "첫 줄\n둘째 줄", None).unwrap();
+        app.reload().unwrap();
+        assert_eq!(app.yank_text(id), "- [ ] 첫 줄 둘째 줄");
     }
 
     #[test]

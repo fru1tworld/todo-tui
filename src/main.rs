@@ -1,6 +1,7 @@
 mod action;
 mod app;
 mod cli;
+mod clipboard;
 mod db;
 mod error;
 mod ui;
