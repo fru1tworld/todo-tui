@@ -56,4 +56,3 @@ fn write_to(program: &str, args: &[&str], text: &str) -> Result<(), String> {
         .map(str::to_owned);
     Err(reason.unwrap_or_else(|| format!("종료 코드 {}", output.status)))
 }
-

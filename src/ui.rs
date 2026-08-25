@@ -102,15 +102,18 @@ fn title_bar(app: &App) -> Paragraph<'static> {
 
     let mut spans = vec![" To-Do ".cyan().bold()];
     for (i, p) in app.projects.iter().enumerate() {
-        let name = format!(" {} {} ", i + 1, p.name);
+        // 개수는 선택된 프로젝트 것이므로 그 탭 안에 붙인다.
         spans.push(if p.id == app.project_id {
-            name.cyan().bold().reversed()
+            format!(" {} {} ({top_level}개) ", i + 1, p.name)
+                .cyan()
+                .bold()
+                .reversed()
         } else {
-            name.dim()
+            format!(" {} {} ", i + 1, p.name).dim()
         });
         spans.push(Span::raw(" "));
     }
-    spans.push(format!(" ({top_level}개)  ").dim());
+    spans.push(Span::raw(" "));
     if app.tab_held {
         spans.push("⇥ ←→ 보내기  ".yellow().bold());
     }
